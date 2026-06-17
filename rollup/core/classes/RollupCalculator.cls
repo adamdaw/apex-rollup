@@ -177,7 +177,15 @@ public without sharing abstract class RollupCalculator {
     this.oldCalcItems = oldCalcItems;
     // if we're already in a full recalc, we've got all the items we need already
     this.shouldTriggerFullRecalc = this.isFullRecalc == false;
-    this.rollupResults(this.winnowItems(calcItems, oldCalcItems));
+    List<WinnowResult> winnowedItems = this.winnowItems(calcItems, oldCalcItems);
+    // A changed-field rollup whose calc items are all unchanged bystanders winnows to nothing while
+    // excluding nothing (childrenIds is empty). The prior value already accounts for every child, so
+    // the recalculation is skipped: recomputing from an empty exclusion set would drop the bystanders,
+    // and even where it nets out it forces a needless aggregate requery on every irrelevant update.
+    if (this.isChangedFieldCalc && this.isFullRecalc == false && winnowedItems.isEmpty() && this.childrenIds.isEmpty()) {
+      return;
+    }
+    this.rollupResults(winnowedItems);
   }
 
   public void setState(RollupState state) {
@@ -342,12 +350,24 @@ public without sharing abstract class RollupCalculator {
         oldCalcItems.put(oldCalcItem.Id, this.getTransformedCalcItem(oldCalcItem));
       }
     }
+    RollupEvaluator.SObjectChangedFieldEvaluator changedFieldEvaluator = this.isChangedFieldCalc
+      ? new RollupEvaluator.SObjectChangedFieldEvaluator(this.metadata.ChangedFieldsOnCalcItem__c.split(','), oldCalcItems)
+      : null;
     for (SObject item : items) {
-      this.childrenIds.add(item?.Id);
       SObject transformedItem = this.getTransformedCalcItem(item);
       WinnowResult result = new WinnowResult(transformedItem, this.opFieldOnCalcItem);
       Boolean shouldAddToResults = this.eval?.matches(transformedItem) != false;
       Boolean currentItemMatches = shouldAddToResults;
+      // A changed-field rollup re-evaluates only when a tracked field changes. When the combined
+      // evaluator rejects an item solely because no tracked field changed - it still satisfies the
+      // where clause and remains under the same parent - it is an unchanged bystander whose
+      // contribution is unchanged. It must stay inside the recalculated aggregate, so it is left out
+      // of childrenIds (the set excluded from that aggregate); excluding it silently dropped a
+      // still-valid child before.
+      Boolean isUnchangedBystander = changedFieldEvaluator != null && shouldAddToResults == false && changedFieldEvaluator.matches(transformedItem) == false;
+      if (isUnchangedBystander == false) {
+        this.childrenIds.add(item?.Id);
+      }
       SObject potentialPriorItem = oldCalcItems.get(transformedItem.Id);
       if (potentialPriorItem != null) {
         result.hasOldItem = true;
