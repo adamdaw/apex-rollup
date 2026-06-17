@@ -109,6 +109,34 @@ private class CustomMetadataDrivenTests {
   }
 
   @IsTest
+  static void changedFieldBystanderUpdateShouldNotDropChildFromRollup() {
+    if (RollupTestUtils.IS_NAMESPACED_PACKAGE_ORG) {
+      return;
+    }
+    // uses Rollup.ChangedFieldBystander (extra-tests/customMetadata) AND extra-tests/triggers/RollupChildTrigger.trigger
+    // The rollup tracks NumberField__c; an update touching only TextField__c is an unchanged bystander.
+    // It must not drop the child from the parent SUM (regression: a still-valid child silently vanished,
+    // collapsing SUM 100 -> 50).
+    RollupParent__c parent = [SELECT Id FROM RollupParent__c];
+    RollupChild__c childOne = new RollupChild__c(Name = 'Child one', NumberField__c = 50, TextField__c = 'a', RollupParent__c = parent.Id);
+    RollupChild__c childTwo = new RollupChild__c(Name = 'Child two', NumberField__c = 50, TextField__c = 'b', RollupParent__c = parent.Id);
+    insert new List<RollupChild__c>{ childOne, childTwo };
+
+    Assert.areEqual(100, [SELECT BystanderCount__c FROM RollupParent__c WHERE Id = :parent.Id].BystanderCount__c, 'Baseline SUM should reflect both children');
+
+    Test.startTest();
+    childOne.TextField__c = 'changed text, NumberField untouched';
+    update childOne;
+    Test.stopTest();
+
+    Assert.areEqual(
+      100,
+      [SELECT BystanderCount__c FROM RollupParent__c WHERE Id = :parent.Id].BystanderCount__c,
+      'A bystander update (no tracked field changed) must not drop a child from the rollup'
+    );
+  }
+
+  @IsTest
   static void shouldWorkForParentLevelWhereClausesFromTrigger() {
     if (RollupTestUtils.IS_NAMESPACED_PACKAGE_ORG) {
       return;
