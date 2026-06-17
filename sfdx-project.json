@@ -5,8 +5,8 @@
             "package": "apex-rollup",
             "path": "rollup",
             "scopeProfiles": true,
-            "versionName": "Fixes https://github.com/jamessimone/apex-rollup/issues/766 by ensuring recalculations occur when a parent lookup is cleared",
-            "versionNumber": "1.7.40.0",
+            "versionName": "Summer 26 updates",
+            "versionNumber": "1.7.41.0",
             "versionDescription": "Fast, configurable, elastically scaling custom rollup solution. Apex Invocable action, one-liner Apex trigger/CMDT-driven logic, and scheduled Apex-ready.",
             "releaseNotesUrl": "https://github.com/jamessimone/apex-rollup/releases/latest",
             "unpackagedMetadata": {
@@ -18,12 +18,12 @@
             "path": "plugins\\CustomObjectRollupLogger",
             "dependencies": [
                 {
-                    "package": "apex-rollup@1.6.0-0"
+                    "package": "apex-rollup@1.7.41"
                 }
             ],
-            "versionNumber": "0.0.13.0",
-            "versionName": "Properly refer to Org_Defaults Rollup Control",
-            "versionDescription": "Prior versions of plugin used fallback values instead of properly delegating configured values to use the Rollup Control CMDT record",
+            "versionNumber": "0.0.14.0",
+            "versionName": "Summer 26 updates",
+            "versionDescription": "Security updates for Summer 26 now that Apex runs in user context by default",
             "default": false,
             "unpackagedMetadata": {
                 "path": "plugins/CustomObjectRollupLogger/tests"
@@ -89,6 +89,7 @@
     "packageAliases": {
         "Apex Rollup - Custom Logger": "0Ho6g000000Gn8ZCAS",
         "Apex Rollup - Custom Logger@0.0.13": "04tKf000000syF7IAI",
+        "Apex Rollup - Custom Logger@0.0.14": "04tg7000000ClG5AAK",
         "Apex Rollup - Extra Code Coverage": "0Ho6g000000GnCWCA0",
         "Apex Rollup - Extra Code Coverage@0.0.28": "04tg70000002W8fAAE",
         "Apex Rollup - Extra Code Coverage@0.0.29": "04tg70000006DqbAAE",
@@ -104,6 +105,7 @@
         "apex-rollup@1.7.37": "04tg700000037wDAAQ",
         "apex-rollup@1.7.38": "04tg70000005Bm1AAE",
         "apex-rollup@1.7.39": "04tg70000007hmbAAA",
-        "apex-rollup@1.7.40": "04tg7000000CG0zAAG"
+        "apex-rollup@1.7.40": "04tg7000000CG0zAAG",
+        "apex-rollup@1.7.41": "04tg7000000CmfBAAS"
     }
 }

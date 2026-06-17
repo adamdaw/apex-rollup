@@ -26,6 +26,7 @@ function Invoke-Extra-Code-Coverage-Prep() {
   $fileNames = @(
     "RollupCalcItemSorterTests"
     "RollupCalculatorTests"
+    "RollupContextFlowPicklistProviderTest"
     "RollupDateLiteralTests"
     "RollupEvaluatorTests"
     "RollupFinalizerTests"
@@ -33,6 +34,7 @@ function Invoke-Extra-Code-Coverage-Prep() {
     "RollupFlowTests"
     "RollupLimitsTest"
     "RollupLoggerTests"
+    "RollupOperationFlowPicklistProviderTest"
     "RollupParentResetProcessorTests"
     "RollupQueryBuilderTests"
     "RollupRecursionItemTests"
