@@ -1135,6 +1135,11 @@ global virtual without sharing class RollupAsyncProcessor extends Rollup impleme
       for (RollupOrderBy__mdt orderBy : roll.metadata.RollupOrderBys__r) {
         childFieldsToAdd.add(orderBy.FieldName__c);
       }
+      if (String.isNotBlank(roll.metadata.GroupByFields__c)) {
+        for (String groupByField : roll.metadata.GroupByFields__c.split(',')) {
+          childFieldsToAdd.add(groupByField.trim());
+        }
+      }
       this.mapFields(this.calcObjectToUniqueFieldNames, roll.calcItemType, childFieldsToAdd);
       if (roll.isGrouped()) {
         this.populateObjectFields(roll.rollups, true);
