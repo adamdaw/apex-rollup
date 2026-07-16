@@ -353,20 +353,40 @@ public without sharing abstract class RollupCalculator {
     RollupEvaluator.SObjectChangedFieldEvaluator changedFieldEvaluator = this.isChangedFieldCalc
       ? new RollupEvaluator.SObjectChangedFieldEvaluator(this.metadata.ChangedFieldsOnCalcItem__c.split(','), oldCalcItems)
       : null;
+    RollupEvaluator.WhereFieldEvaluator whereEvaluator = this.isChangedFieldCalc && String.isNotBlank(this.metadata.CalcItemWhereClause__c)
+      ? RollupEvaluator.getWhereEval(this.metadata.CalcItemWhereClause__c, this.calcItemSObjectType)
+      : null;
     for (SObject item : items) {
       SObject transformedItem = this.getTransformedCalcItem(item);
       WinnowResult result = new WinnowResult(transformedItem, this.opFieldOnCalcItem);
       Boolean shouldAddToResults = this.eval?.matches(transformedItem) != false;
       Boolean currentItemMatches = shouldAddToResults;
-      // A changed-field rollup re-evaluates only when a tracked field changes. When the combined
-      // evaluator rejects an item solely because no tracked field changed - it still satisfies the
-      // where clause and remains under the same parent - it is an unchanged bystander whose
-      // contribution is unchanged. It must stay inside the recalculated aggregate, so it is left out
-      // of childrenIds (the set excluded from that aggregate); excluding it silently dropped a
-      // still-valid child before.
-      Boolean isUnchangedBystander = changedFieldEvaluator != null && shouldAddToResults == false && changedFieldEvaluator.matches(transformedItem) == false;
+      // A changed-field rollup re-evaluates only when a tracked field changes. An item is an
+      // "unchanged bystander" only when the combined evaluator rejects it SOLELY because no tracked
+      // field changed AND it still satisfies the where clause (still in scope, same parent) - its
+      // contribution is unchanged, so it must stay inside the recalculated aggregate and out of
+      // childrenIds (the set excluded from that aggregate); excluding it silently dropped a still-valid
+      // child before. The where-clause conjunct is load-bearing: the combined `this.eval` returns false
+      // for BOTH "no tracked change" and "left the where scope", so without it a child that exited the
+      // where clause with no tracked-field change is misclassified as a bystander and its departure is
+      // never applied - the parent stays stale-high (base ops) or the row is wrongly retained (F2).
+      Boolean isUnchangedBystander =
+        changedFieldEvaluator != null &&
+        shouldAddToResults == false &&
+        changedFieldEvaluator.matches(transformedItem) == false &&
+        (whereEvaluator == null || whereEvaluator.matches(transformedItem));
       if (isUnchangedBystander == false) {
         this.childrenIds.add(item?.Id);
+      }
+      // Custom-state ops (AVERAGE / FIRST / LAST / GROUP BY) run their recalc as a full recalc over the
+      // complete current child set. Without re-including it, the changed-field evaluator drops an
+      // unchanged bystander from that set, computing the parent from an incomplete set of children
+      // (e.g. AVERAGE over the surviving child; LAST skipping to a wrong row; a GROUP BY group short a
+      // member). isUnchangedBystander already guarantees the item is still in where-clause scope, so it
+      // is safe to re-include; matchesCurrent is set too so the delta UPDATE_SUM/COUNT path counts it.
+      if (this.isFullRecalc && isUnchangedBystander) {
+        shouldAddToResults = true;
+        currentItemMatches = true;
       }
       SObject potentialPriorItem = oldCalcItems.get(transformedItem.Id);
       if (potentialPriorItem != null) {
