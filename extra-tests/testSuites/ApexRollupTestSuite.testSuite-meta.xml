@@ -30,4 +30,11 @@
     <testClassName>RollupStateTests</testClassName>
     <testClassName>RollupTests</testClassName>
     <testClassName>RollupTestUtils</testClassName>
+    <testClassName>ZZAGroupByMultiFieldReproTest</testClassName>
+    <testClassName>ZZF1GroupByReproTest</testClassName>
+    <testClassName>ZZF1ReproTest</testClassName>
+    <testClassName>ZZF1WhereBreakTest</testClassName>
+    <testClassName>ZZF2WhereExitSumTest</testClassName>
+    <testClassName>ZZSiblingRetrievalTieBreakTest</testClassName>
+    <testClassName>ZZWhereClauseBystanderTest</testClassName>
 </ApexTestSuite>
