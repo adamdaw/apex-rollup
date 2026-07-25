@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<PermissionSet xmlns="http://soap.sforce.com/2006/04/metadata">
+    <label>Rollup Repro Access</label>
+    <hasActivationRequired>false</hasActivationRequired>
+    <objectPermissions>
+        <object>RollupParent__c</object>
+        <allowRead>true</allowRead>
+        <allowCreate>true</allowCreate>
+        <allowEdit>true</allowEdit>
+        <allowDelete>true</allowDelete>
+        <viewAllRecords>true</viewAllRecords>
+        <modifyAllRecords>true</modifyAllRecords>
+    </objectPermissions>
+    <objectPermissions>
+        <object>RollupChild__c</object>
+        <allowRead>true</allowRead>
+        <allowCreate>true</allowCreate>
+        <allowEdit>true</allowEdit>
+        <allowDelete>true</allowDelete>
+        <viewAllRecords>true</viewAllRecords>
+        <modifyAllRecords>true</modifyAllRecords>
+    </objectPermissions>
+    <fieldPermissions><field>RollupParent__c.BystanderCount__c</field><readable>true</readable><editable>true</editable></fieldPermissions>
+    <fieldPermissions><field>RollupParent__c.AverageField__c</field><readable>true</readable><editable>true</editable></fieldPermissions>
+    <fieldPermissions><field>RollupParent__c.AverageControl__c</field><readable>true</readable><editable>true</editable></fieldPermissions>
+    <fieldPermissions><field>RollupParent__c.LastField__c</field><readable>true</readable><editable>true</editable></fieldPermissions>
+    <fieldPermissions><field>RollupParent__c.LastControl__c</field><readable>true</readable><editable>true</editable></fieldPermissions>
+    <fieldPermissions><field>RollupParent__c.NumberField__c</field><readable>true</readable><editable>true</editable></fieldPermissions>
+    <fieldPermissions><field>RollupParent__c.WhereAvgField__c</field><readable>true</readable><editable>true</editable></fieldPermissions>
+    <fieldPermissions><field>RollupParent__c.WhereAvgControl__c</field><readable>true</readable><editable>true</editable></fieldPermissions>
+    <fieldPermissions><field>RollupParent__c.SiblingNullField__c</field><readable>true</readable><editable>true</editable></fieldPermissions>
+    <fieldPermissions><field>RollupParent__c.SiblingNullControl__c</field><readable>true</readable><editable>true</editable></fieldPermissions>
+    <fieldPermissions><field>RollupParent__c.DateField__c</field><readable>true</readable><editable>true</editable></fieldPermissions>
+    <fieldPermissions><field>RollupParent__c.TextField__c</field><readable>true</readable><editable>true</editable></fieldPermissions>
+    <fieldPermissions><field>RollupParent__c.GroupByField__c</field><readable>true</readable><editable>true</editable></fieldPermissions>
+    <fieldPermissions><field>RollupParent__c.GroupByControl__c</field><readable>true</readable><editable>true</editable></fieldPermissions>
+    <fieldPermissions><field>RollupParent__c.GroupByAvgField__c</field><readable>true</readable><editable>true</editable></fieldPermissions>
+    <fieldPermissions><field>RollupChild__c.NumberField__c</field><readable>true</readable><editable>true</editable></fieldPermissions>
+    <fieldPermissions><field>RollupChild__c.DateField__c</field><readable>true</readable><editable>true</editable></fieldPermissions>
+    <fieldPermissions><field>RollupChild__c.TextField__c</field><readable>true</readable><editable>true</editable></fieldPermissions>
+    <fieldPermissions><field>RollupChild__c.RollupParent__c</field><readable>true</readable><editable>true</editable></fieldPermissions>
+    <fieldPermissions><field>RollupParent__c.WhereSumField__c</field><readable>true</readable><editable>true</editable></fieldPermissions>
+    <fieldPermissions><field>RollupParent__c.WhereSumControl__c</field><readable>true</readable><editable>true</editable></fieldPermissions>
+    <fieldPermissions><field>RollupParent__c.GroupByMultiField__c</field><readable>true</readable><editable>true</editable></fieldPermissions>
+</PermissionSet>
