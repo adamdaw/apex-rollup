@@ -1140,6 +1140,18 @@ global virtual without sharing class RollupAsyncProcessor extends Rollup impleme
           childFieldsToAdd.add(groupByField.trim());
         }
       }
+      // A changed-fields rollup that runs as a full recalc requeries the sibling calc items that were
+      // NOT part of the triggering DML. SObjectChangedFieldEvaluator only classifies a retrieved sibling
+      // when its tracked fields are populated (getPopulatedFieldsAsMap), so a tracked field that is not
+      // otherwise in the SELECT (not the op field, where field, or order-by) reads null on the sibling
+      // and the evaluator cannot tell whether it changed. Add every tracked field to the requery so the
+      // classification is driven by real data rather than by whichever other rollup on the same
+      // SObjectType happens to pull the field into the shared requery set.
+      if (String.isNotBlank(roll.metadata.ChangedFieldsOnCalcItem__c)) {
+        for (String changedField : roll.metadata.ChangedFieldsOnCalcItem__c.split(',')) {
+          childFieldsToAdd.add(changedField.trim());
+        }
+      }
       this.mapFields(this.calcObjectToUniqueFieldNames, roll.calcItemType, childFieldsToAdd);
       if (roll.isGrouped()) {
         this.populateObjectFields(roll.rollups, true);
