@@ -211,6 +211,9 @@ global without sharing virtual class Rollup implements RollupLogger.ToStringObje
   public class FilterResults {
     public final Set<Id> matchingItemIds = new Set<Id>();
     public Evaluator eval { get; set; }
+    // The raw caller-supplied custom Evaluator, kept separately from the combined `eval` so the
+    // full-recalc bystander re-inclusion in RollupCalculator.winnowItems can honor it.
+    public Evaluator customEval { get; set; }
   }
 
   private class RollupMetadata {
@@ -3067,6 +3070,7 @@ global without sharing virtual class Rollup implements RollupLogger.ToStringObje
   ) {
     FilterResults results = new FilterResults();
     results.eval = RollupEvaluator.getEvaluator(eval, metadata, oldCalcItems, calcItemType);
+    results.customEval = eval;
     if (shouldFilterCalcItems == false) {
       results.matchingItemIds.addAll(new Map<Id, SObject>(calcItems).keySet());
       return results;
