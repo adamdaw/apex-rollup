@@ -11,43 +11,6 @@ $sfdxProjectJson = Get-SFDX-Project-JSON
 $loggerClassPath = "./rollup/core/classes/RollupLogger.cls"
 $shouldGitAddLoggerClass = $true;
 
-function Invoke-Extra-Code-Coverage-Prep() {
-  $extraCodeCoveragePath = "./plugins/ExtraCodeCoverage/classes"
-  if (Test-Path $extraCodeCoveragePath) {
-    Write-Host "Dir exists, deleting"
-    rm $extraCodeCoveragePath -Recurse
-  }
-
-  Write-Host "Recreating ExtraCodeCoverage classes dir"
-  mkdir $extraCodeCoveragePath
-
-  Write-Host "Copying rollup tests to git ignored $extraCodeCoveragePath directory"
-
-  $fileNames = @(
-    "RollupCalcItemSorterTests"
-    "RollupCalculatorTests"
-    "RollupContextFlowPicklistProviderTest"
-    "RollupDateLiteralTests"
-    "RollupEvaluatorTests"
-    "RollupFinalizerTests"
-    "RollupFlowBulkProcessorTests"
-    "RollupFlowTests"
-    "RollupLimitsTest"
-    "RollupLoggerTests"
-    "RollupOperationFlowPicklistProviderTest"
-    "RollupParentResetProcessorTests"
-    "RollupQueryBuilderTests"
-    "RollupRecursionItemTests"
-    "RollupRelationshipFieldFinderTests"
-    "RollupTests"
-    "RollupTestUtils"
-  )
-  foreach ($fileName in $fileNames) {
-    Copy-Item "extra-tests/classes/$fileName.cls" $extraCodeCoveragePath
-    Copy-Item "extra-tests/classes/$fileName.cls-meta.xml" $extraCodeCoveragePath
-  }
-}
-
 function Update-Package-Install-Links {
   param (
     $filePath,
@@ -152,10 +115,6 @@ function Generate() {
 
   Write-Host "Starting for $packageName" -ForegroundColor Yellow
 
-  if ("Apex Rollup - Extra Code Coverage" -eq $packageName) {
-    Invoke-Extra-Code-Coverage-Prep
-  }
-
   $currentPackage = Get-Package-Directory $packageName
   Get-Next-Package-Version $currentPackage $packageName
   $currentPackageVersion = $currentPackage.versionNumber
@@ -206,6 +165,7 @@ function New-Namespaced-Package {
   # the class names in a test suite need to have the namespace be appended, which is a waste here
   # since we aren't using the test suite for anything except local development & testing
   Remove-Item -Path ./rollup-namespaced/source/extra-tests/testSuites -Recurse -Force
+  Remove-Item -Path ./rollup-namespaced/source/rollup/tests/testSuites -Recurse -Force
 
   # we always want to stay in lock-step with the current versionName between the non-namespace and namespaced versions of the package
   $sfdxProjectJson = Get-SFDX-Project-JSON
@@ -220,6 +180,7 @@ function New-Namespaced-Package {
   } catch {
     Write-Host "An error occurred during package generation:" -ForegroundColor Red
     Write-Host $_ -ForegroundColor Red
+    Remove-Item -Path ./rollup-namespaced/source -Recurse -Force
   }
 
   Copy-Item $sfdxProjectJsonPath $namespacedProjectJsonPath -Force

@@ -24,11 +24,11 @@ As well, don't miss [the Wiki](../../wiki), which includes even more info for co
 
 ## Deployment & Setup
 
-<a href="https://login.salesforce.com/packaging/installPackage.apexp?p0=04tg7000000F761AAC">
+<a href="https://login.salesforce.com/packaging/installPackage.apexp?p0=04tg7000000GdJxAAK">
   <img alt="Deploy to Salesforce" src="./media/deploy-package-to-prod.png">
 </a>
 
-<a href="https://test.salesforce.com/packaging/installPackage.apexp?p0=04tg7000000F761AAC">
+<a href="https://test.salesforce.com/packaging/installPackage.apexp?p0=04tg7000000GdJxAAK">
   <img alt="Deploy to Salesforce Sandbox" src="./media/deploy-package-to-sandbox.png">
 </a>
 <br/>
@@ -1010,8 +1010,6 @@ global interface IPrePostUpdater {
   void postUpdate(List<SObject> recordsToUpate);
 }
 ```
-
-- If you need to generate additional test code coverage for `apex-rollup` (which might be necessary in a highly declarative org), you can install the [Extra Code Coverage plugin](plugins/ExtraCodeCoverage), which automatically gets updated any time I make changes to tests here.
 
 - To customize how updates are made to the parent-level records in Rollup, create a `Rollup Plugin` custom metadata record with the name field set to `RollupCustomUpdater`. Create an Apex class with the same name and implement the `IUpdater` interface from `RollupSObjectUpdater`:
 
