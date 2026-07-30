@@ -1,6 +1,9 @@
 @SuppressWarnings('PMD.AvoidGlobalModifier,PMD.ExcessiveClassLength,PMD.ExcessiveParameterList,PMD.NcssTypeCount,PMD.TooManyFields')
 global virtual without sharing class RollupAsyncProcessor extends Rollup implements Database.Batchable<SObject>, Database.RaisesPlatformEvents, System.Comparable {
   private final Evaluator eval;
+  // The raw caller-supplied custom Evaluator, carried alongside `eval` so it can be handed to the
+  // RollupCalculator for the full-recalc bystander re-inclusion check. Null for CMDT/trigger rollups.
+  private Evaluator customEval;
   private final RollupOperation op;
   private final SObjectField lookupFieldOnCalcItem;
   private final SObjectField lookupFieldOnLookupObject;
@@ -180,6 +183,7 @@ global virtual without sharing class RollupAsyncProcessor extends Rollup impleme
     if (filterResults.eval != null) {
       this.eval = filterResults.eval;
     }
+    this.customEval = filterResults.customEval;
 
     this.isNoOp = this.matchingCalcItemIds?.isEmpty() == true && this.metadata?.IsFullRecordSet__c == false;
   }
@@ -1464,6 +1468,7 @@ global virtual without sharing class RollupAsyncProcessor extends Rollup impleme
     if (rollupCalc == null) {
       rollupCalc = RollupCalculator.Factory.getCalculator(operation, roll.opFieldOnCalcItem, roll.opFieldOnLookupObject, roll.metadata, lookupKeyField);
       rollupCalc.setEvaluator(roll.eval);
+      rollupCalc.setCustomEvaluator(roll.customEval);
       rollupCalc.setCDCUpdate(this.isCDCUpdate);
       rollupCalc.setFullRecalc(roll.isFullRecalc);
       rollupCalc.setState(this.fullRecalcProcessor?.getState());
@@ -1487,6 +1492,7 @@ global virtual without sharing class RollupAsyncProcessor extends Rollup impleme
     RollupOperation deleteOp = this.getOpMap().get('DELETE_' + Rollup.getBaseOperationName(roll.op.name()));
     FilterResults results = new FilterResults();
     results.eval = roll.eval;
+    results.customEval = roll.customEval;
     Rollup__mdt clonedMeta = roll.metadata.clone();
     clonedMeta.RollupOperation__c = deleteOp.name();
     RollupAsyncProcessor oldLookupsRollup = getProcessor(

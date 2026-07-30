@@ -26,6 +26,10 @@ public without sharing abstract class RollupCalculator {
   protected String lookupKeyQuery;
   protected String lookupRecordKey;
   protected Rollup.Evaluator eval;
+  // The caller-supplied custom Evaluator, threaded alongside the combined `eval` so the full-recalc
+  // bystander re-inclusion in winnowItems can honor it (the combined `eval` cannot be decomposed back
+  // into its conjuncts). Null for the common CMDT/trigger path, which supplies no custom Evaluator.
+  protected Rollup.Evaluator customEval;
   protected Boolean shouldShortCircuit = false;
   protected Object returnVal;
   protected Boolean isLastItem = false;
@@ -160,6 +164,10 @@ public without sharing abstract class RollupCalculator {
 
   public void setEvaluator(Rollup.Evaluator eval) {
     this.eval = eval;
+  }
+
+  public void setCustomEvaluator(Rollup.Evaluator customEval) {
+    this.customEval = customEval;
   }
 
   public void setFullRecalc(Boolean isFullRecalc) {
@@ -370,11 +378,19 @@ public without sharing abstract class RollupCalculator {
       // for BOTH "no tracked change" and "left the where scope", so without it a child that exited the
       // where clause with no tracked-field change is misclassified as a bystander and its departure is
       // never applied - the parent stays stale-high (base ops) or the row is wrongly retained (F2).
+      // The custom-evaluator conjunct is load-bearing for the same reason: the combined `this.eval` ANDs
+      // the caller's custom Evaluator ahead of the where/changed-field evals, so it also returns false
+      // when the caller's Evaluator rejects the item. Re-including a bystander that the custom Evaluator
+      // rejected would override the caller's explicit exclusion, so an item is only an unchanged bystander
+      // when every non-changed-field evaluator (custom + where) still accepts it. (RecursiveUpdateEvaluator
+      // is intentionally NOT re-checked: it is stateful, and overriding recursion suppression during a
+      // full recalc - which recomputes over all current members - is by design.)
       Boolean isUnchangedBystander =
         changedFieldEvaluator != null &&
         shouldAddToResults == false &&
         changedFieldEvaluator.matches(transformedItem) == false &&
-        (whereEvaluator == null || whereEvaluator.matches(transformedItem));
+        (whereEvaluator == null || whereEvaluator.matches(transformedItem)) &&
+        (this.customEval == null || this.customEval.matches(transformedItem));
       if (isUnchangedBystander == false) {
         this.childrenIds.add(item?.Id);
       }
@@ -1402,6 +1418,7 @@ public without sharing abstract class RollupCalculator {
     public override void performRollup(List<SObject> calcItems, Map<Id, SObject> oldCalcItems) {
       // ceremony section - curry the values from this to the inner calculator
       this.innerCalculator.setEvaluator(this.eval);
+      this.innerCalculator.setCustomEvaluator(this.customEval);
       this.innerCalculator.setFullRecalc(this.isFullRecalc);
       this.innerCalculator.setCDCUpdate(this.isCDCUpdate);
       this.innerCalculator.setState(this.state);
