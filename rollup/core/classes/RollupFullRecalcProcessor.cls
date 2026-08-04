@@ -10,6 +10,9 @@ global abstract without sharing class RollupFullRecalcProcessor extends RollupAs
   private final Set<String> jobIds = new Set<String>();
   private Map<Schema.SObjectType, Set<Id>> typeToOldIntermediateGrandparents;
   private Boolean hasProcessedParentRecords = false;
+  private RollupFullRecalcGate fullRecalcGate;
+  private RollupFullRecalcContext fullRecalcContext;
+  private Boolean hasNotifiedGate = false;
 
   private RollupFullRecalcProcessor(InvocationPoint invokePoint) {
     super(invokePoint);
@@ -36,6 +39,34 @@ global abstract without sharing class RollupFullRecalcProcessor extends RollupAs
 
   public void addCaboose(RollupFullRecalcProcessor caboose) {
     this.cabooses.add(caboose);
+  }
+
+  /**
+   * @description Carries the full-recalc gate and the context captured at `beforeEnqueue`
+   * through to terminal completion, so the release keys the same logical recalc.
+   * @param gate the resolved gate, or null when no gate is registered
+   * @param context the recalc context captured when the gate proceeded
+   */
+  public void setFullRecalcGate(RollupFullRecalcGate gate, RollupFullRecalcContext context) {
+    this.fullRecalcGate = gate;
+    this.fullRecalcContext = context;
+  }
+
+  /**
+   * @description Notifies the gate that this recalc has terminally completed, exactly once
+   * per logical recalc (idempotent across cursor pages / re-entry). Fails open: a throwing
+   * `afterComplete` is contained so it never breaks the finalizer.
+   */
+  public void notifyGateComplete() {
+    if (this.fullRecalcGate == null || this.hasNotifiedGate) {
+      return;
+    }
+    this.hasNotifiedGate = true;
+    try {
+      this.fullRecalcGate.afterComplete(this.fullRecalcContext);
+    } catch (Exception ex) {
+      RollupLogger.Instance.log('full recalc gate afterComplete threw, continuing', System.LoggingLevel.WARN);
+    }
   }
 
   public void addMetadata(Rollup__mdt meta) {

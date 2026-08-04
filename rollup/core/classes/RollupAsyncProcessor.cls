@@ -26,6 +26,9 @@ global virtual without sharing class RollupAsyncProcessor extends Rollup impleme
   protected Boolean isProcessed = false;
   protected Boolean overridesRunCalc = false;
   protected Boolean shouldSortToFront = false;
+  // @TestVisible test seam: the failsafe path self-references (fullRecalcProcessor = this) during
+  // performWork; a unit test driving finish(BatchableContext) directly supplies that reference.
+  @TestVisible
   protected RollupFullRecalcProcessor fullRecalcProcessor;
   protected final SObjectType calcItemType;
   protected final Set<String> recordIds;
@@ -247,7 +250,14 @@ global virtual without sharing class RollupAsyncProcessor extends Rollup impleme
 
   public virtual void finish(Database.BatchableContext context) {
     if (this.isTimingOut == false) {
-      this.fullRecalcProcessor?.finish();
+      try {
+        this.fullRecalcProcessor?.finish();
+      } finally {
+        // container-agnostic release: the Batchable failsafe completion path releases the gate too
+        // (the cursor-Queueable finalizer path is the other; hasNotifiedGate keeps this idempotent),
+        // even if finish() throws — else the Slice-2 lock would strand.
+        this.fullRecalcProcessor?.notifyGateComplete();
+      }
     }
     context = context ?? new AdditionalContext(this.getNoProcessId());
     this.logger.log('finished successfully', context, System.LoggingLevel.INFO);

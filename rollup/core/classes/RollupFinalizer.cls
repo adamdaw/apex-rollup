@@ -34,6 +34,7 @@ public without sharing virtual class RollupFinalizer implements Finalizer {
     switch on fc?.getResult() {
       when UNHANDLED_EXCEPTION {
         this.logUnhandledException(fc);
+        this.handleUnhandledException(fc);
       }
       when else {
         this.handleSuccess();
@@ -49,6 +50,16 @@ public without sharing virtual class RollupFinalizer implements Finalizer {
 
   @SuppressWarnings('PMD.EmptyStatementBlock')
   protected virtual void handleSuccess() {
+  }
+
+  /**
+   * @description Subclass hook fired on the catchable-failure (`UNHANDLED_EXCEPTION`) branch,
+   * mirroring `handleSuccess()` for the success branch. Default is a no-op; `FullRecalcFinalizer`
+   * overrides it to release the full-recalc gate once on failure.
+   * @param fc the finalizer context for the failed job
+   */
+  @SuppressWarnings('PMD.EmptyStatementBlock')
+  protected virtual void handleUnhandledException(FinalizerContext fc) {
   }
 
   protected void logUnhandledException(FinalizerContext fc) {

@@ -1,5 +1,9 @@
 public without sharing virtual class RollupFullBatchRecalculator extends RollupFullRecalcProcessor {
   private final RollupState state = new RollupState();
+  // @TestVisible test seam: lets a unit test inject a fake CalcItemRetriever so
+  // FullRecalcFinalizer.handleSuccess's paging-vs-terminal branch can be driven without a
+  // live Database.getCursor. Mirrors the package's existing @TestVisible mocks.
+  @TestVisible
   private CalcItemRetriever retriever;
 
   private static final Integer DEFAULT_CHUNK_SIZE = 500;
@@ -81,10 +85,12 @@ public without sharing virtual class RollupFullBatchRecalculator extends RollupF
     return this.startBatchProcessor();
   }
 
+  @TestVisible
   protected override RollupFinalizer getFinalizer() {
     return new FullRecalcFinalizer(this);
   }
 
+  @TestVisible
   private interface CalcItemRetriever {
     List<SObject> fetch();
     Boolean shouldContinue();
@@ -137,8 +143,20 @@ public without sharing virtual class RollupFullBatchRecalculator extends RollupF
         this.conductor.startAsyncWork();
         this.hasAlreadyStartedConductor = true;
       } else {
-        this.conductor.finish();
+        try {
+          this.conductor.finish();
+        } finally {
+          // terminal success (no more cursor pages): release the full-recalc gate once, even if
+          // finish()'s final bookkeeping DML throws — an in-finalizer throw is NOT routed to
+          // handleUnhandledException, so without this finally the Slice-2 lock would strand.
+          this.conductor.notifyGateComplete();
+        }
       }
+    }
+
+    public override void handleUnhandledException(FinalizerContext fc) {
+      // catchable failure: release the full-recalc gate once
+      this.conductor.notifyGateComplete();
     }
   }
 }

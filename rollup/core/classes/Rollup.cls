@@ -25,6 +25,10 @@ global without sharing virtual class Rollup implements RollupLogger.ToStringObje
   @TestVisible
   private static final String CONTROL_ORG_DEFAULTS = 'Org_Defaults';
   @TestVisible
+  private static final String FULL_RECALC_GATE_NAME = 'FullRecalcGate';
+  @TestVisible
+  private static final String FULL_RECALC_GATE_PARAM_NAME = 'FullRecalcGateClass';
+  @TestVisible
   private static Boolean shouldRefreshCachedControl = false;
   @TestVisible
   private static Boolean shouldFlattenAsyncProcesses = false;
@@ -2346,7 +2350,120 @@ global without sharing virtual class Rollup implements RollupLogger.ToStringObje
       fullRecalc.setOldIntermediateGrandparents(wrappedMeta.typeToOldIntermediateParents);
       fullRecalc.isNoOp = false;
     }
+    // Only the cursor path (RollupFullBatchRecalculator) is ever gated; skip the context
+    // allocation for the deferred/small-set path so the dormant seam costs nothing there.
+    if ((fullRecalc instanceof RollupFullBatchRecalculator) == false) {
+      return fullRecalc;
+    }
+    RollupFullRecalcContext gateContext = new RollupFullRecalcContext(
+      calcItemType,
+      wrappedMeta.metadata,
+      wrappedMeta.recordIds,
+      wrappedMeta.recordCount,
+      invokePoint
+    );
+    return applyFullRecalcGate(fullRecalc, gateContext);
+  }
+
+  /**
+   * @description Consults the registered full-recalc gate (if any) for the built processor.
+   * On `SUPPRESS` it returns a no-op substitute; on `PROCEED` (or no/failed gate) it returns
+   * the original processor, carrying the gate + context through so completion can notify once.
+   * Every gate interaction is wrapped so any failure fails open (proceeds unchanged).
+   * @param fullRecalc the full-recalc processor the framework built
+   * @param context the immutable recalc context keyed on the rollup
+   * @return the original processor, or a suppressed substitute when the gate returns SUPPRESS
+   */
+  @TestVisible
+  private static RollupFullRecalcProcessor applyFullRecalcGate(RollupFullRecalcProcessor fullRecalc, RollupFullRecalcContext context) {
+    // Consult ONLY on the cursor path: RollupFullBatchRecalculator is the sole processor whose
+    // FullRecalcFinalizer fires notifyGateComplete, so it is the only path where beforeEnqueue and
+    // afterComplete are guaranteed to pair. The deferred/small-set processor delegates to the regular
+    // queueable path and never releases, so consulting it would leak a claim — leave it unchanged.
+    if ((fullRecalc instanceof RollupFullBatchRecalculator) == false) {
+      return fullRecalc;
+    }
+    RollupFullRecalcGate gate = resolveFullRecalcGate();
+    if (gate == null) {
+      return fullRecalc;
+    }
+    try {
+      if (gate.beforeEnqueue(context) == RollupFullRecalcContext.Decision.SUPPRESS) {
+        return new RollupSuppressedFullRecalc(context);
+      }
+    } catch (Exception ex) {
+      RollupLogger.Instance.log('full recalc gate beforeEnqueue threw, proceeding', System.LoggingLevel.WARN);
+      return fullRecalc;
+    }
+    fullRecalc.setFullRecalcGate(gate, context);
     return fullRecalc;
+  }
+
+  /**
+   * @description Resolves the full-recalc gate implementation from a well-known
+   * `RollupPlugin__mdt` DeveloperName whose parameter `Value__c` names the class, mirroring
+   * the shipped plugin-resolution pattern. Returns null (fail-open) when unconfigured,
+   * unresolvable, non-assignable, or if resolution throws.
+   * @return the gate instance, or null when none is configured/resolvable
+   */
+  @TestVisible
+  private static RollupFullRecalcGate resolveFullRecalcGate() {
+    try {
+      RollupPlugin plugin = new RollupPlugin();
+      RollupPlugin__mdt gatePlugin = plugin.getInstance(FULL_RECALC_GATE_NAME);
+      if (gatePlugin == null) {
+        return null;
+      }
+      // single-valued config: one parameter names the implementing class (mirrors the RollupLogger precedent)
+      RollupPluginParameter__mdt param = plugin.getParameterInstance(FULL_RECALC_GATE_PARAM_NAME);
+      String typeName = param?.Value__c;
+      Type gateType = typeName == null ? null : Type.forName(typeName);
+      if (gateType != null && RollupFullRecalcGate.class.isAssignableFrom(gateType)) {
+        return (RollupFullRecalcGate) gateType.newInstance();
+      }
+    } catch (Exception ex) {
+      RollupLogger.Instance.log('full recalc gate resolution failed, proceeding', System.LoggingLevel.WARN);
+    }
+    return null;
+  }
+
+  /**
+   * @description Substitute full-recalc processor returned when the gate suppresses a
+   * concurrent duplicate. It is a `RollupFullRecalcProcessor` (so it survives the framework's
+   * no-op guard) but is deliberately NOT a `RollupFullBatchRecalculator`, and every async
+   * entry point is a no-op so the duplicate recalc never runs.
+   */
+  public without sharing class RollupSuppressedFullRecalc extends RollupFullRecalcProcessor {
+    /**
+     * @description Builds the substitute from the suppressed recalc's context.
+     * @param context the recalc context the gate suppressed
+     */
+    public RollupSuppressedFullRecalc(RollupFullRecalcContext context) {
+      super('', context.getInvocationPoint(), context.getRollupMetadata(), context.getCalcItemType(), new Set<String>(), null);
+      this.overridesRunCalc = true;
+      this.isNoOp = true;
+    }
+
+    public override String runCalc() {
+      return this.getNoProcessId();
+    }
+
+    protected override String startAsyncWork() {
+      return this.getNoProcessId();
+    }
+
+    @SuppressWarnings('PMD.EmptyStatementBlock')
+    protected override void performWork() {
+      // intentional no-op: the gate suppressed this concurrent duplicate full recalculation
+    }
+
+    protected override List<RollupAsyncProcessor> transformFullRecalcRollups() {
+      return new List<RollupAsyncProcessor>();
+    }
+
+    protected override String getTypeName() {
+      return RollupSuppressedFullRecalc.class.getName();
+    }
   }
 
   private static List<SObject> replaceFlowInputCalcItemsIfNecessary(
