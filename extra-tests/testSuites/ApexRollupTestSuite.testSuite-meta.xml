@@ -7,29 +7,11 @@
     <testClassName>RollupFieldInitializerTests</testClassName>
     <testClassName>RollupFlowFullRecalcDispatcherTests</testClassName>
     <testClassName>RollupFlowFullRecalcTests</testClassName>
+    <testClassName>RollupFullRecalcGateTests</testClassName>
     <testClassName>RollupFullRecalcTests</testClassName>
     <testClassName>RollupIntegrationTests</testClassName>
     <testClassName>RollupMultiCurrencyTests</testClassName>
-    <testClassName>RollupCalcItemSorterTests</testClassName>
-    <testClassName>RollupCalculatorTests</testClassName>
-    <testClassName>RollupContextFlowPicklistProviderTest</testClassName>
-    <testClassName>RollupDateLiteralTests</testClassName>
-    <testClassName>RollupDatetimeTimezoneTests</testClassName>
-    <testClassName>RollupEvaluatorTests</testClassName>
-    <testClassName>RollupFinalizerTests</testClassName>
-    <testClassName>RollupFlowBulkProcessorTests</testClassName>
-    <testClassName>RollupFlowTests</testClassName>
-    <testClassName>RollupLimitsTest</testClassName>
-    <testClassName>RollupLoggerTests</testClassName>
-    <testClassName>RollupOperationFlowPicklistProviderTest</testClassName>
-    <testClassName>RollupParentResetProcessorTests</testClassName>
-    <testClassName>RollupQueryBuilderTests</testClassName>
-    <testClassName>RollupRecursionItemTests</testClassName>
-    <testClassName>RollupRelationshipFieldFinderTests</testClassName>
     <testClassName>RollupRepositoryTests</testClassName>
-    <testClassName>RollupSObjectUpdaterTests</testClassName>
-    <testClassName>RollupStateTests</testClassName>
-    <testClassName>RollupTests</testClassName>
     <testClassName>ZZAGroupByMultiFieldReproTest</testClassName>
     <testClassName>ZZCustomEvalBystanderTest</testClassName>
     <testClassName>ZZF1GroupByReproTest</testClassName>
