@@ -870,6 +870,68 @@ public class RollupFullRecalcGateTests {
     Assert.areEqual(1, afterCompleteCount, 'a recalc aborted after the consult must still release — nothing downstream can');
   }
 
+  // ---- REVIEW R5-F1: the OTHER operator kill switch also releases ----
+  @IsTest
+  static void abortSwitchReleasesTheClaimItNeverGotToUse() {
+    beforeEnqueueCount = 0;
+    afterCompleteCount = 0;
+    // the sibling of the IsEnabled__c switch, and the harder one: ingestRollupControlData prunes
+    // aborted rollups out of the tree BEFORE runCalc's release walk runs, so the walk alone misses
+    // a gate armed on one of them
+    Rollup.defaultControl = new RollupControl__mdt(IsRollupLoggingEnabled__c = true, MaxLookupRowsBeforeBatching__c = 0, ShouldAbortRun__c = true);
+    registerGate(ProceedGate.class.getName());
+    insert as system new Contact(LastName = 'abort switch full recalc');
+
+    Test.startTest();
+    String processId = Rollup.performBulkFullRecalc(grandparentMetas(), Rollup.InvocationPoint.FROM_FULL_RECALC_LWC.name());
+    Test.stopTest();
+
+    Assert.areEqual(1, beforeEnqueueCount, 'precondition: the gate was consulted at build time, before the control record could abort the run');
+    Assert.isTrue(processId.contains('exiting early'), 'precondition: ShouldAbortRun__c aborted the recalc, so no finalizer will ever run. Got: ' + processId);
+    Assert.areEqual(1, afterCompleteCount, 'an aborted recalc must release even though it was pruned out of the tree before the walk');
+  }
+
+  // ---- REVIEW R5-F2: the build-time no-op filter is what stops the other strand ----
+  @IsTest
+  static void zeroRecordRecalcIsNeverConsulted() {
+    beforeEnqueueCount = 0;
+    afterCompleteCount = 0;
+    Rollup.defaultControl = new RollupControl__mdt(IsRollupLoggingEnabled__c = true, MaxLookupRowsBeforeBatching__c = 0);
+    registerGate(ProceedGate.class.getName());
+    // deliberately no calc items: the processor is built, then transformWrappedMetadataToFullRecalcRollups
+    // resets isNoOp and addRollup drops it, so no job and no finalizer ever exist for it. Consulting
+    // it would take a claim with nothing left to release it — the build-time filter is load-bearing.
+    //
+    // FROM_FULL_RECALC_APEX, not the LWC point: the LWC/Flow points set isFullRecalcApp, and a
+    // zero-record recalc under those returns the parent-reset processor before the gate block is
+    // ever reached — which makes this test vacuous and green with the filter deleted.
+
+    Test.startTest();
+    Rollup.performBulkFullRecalc(grandparentMetas(), Rollup.InvocationPoint.FROM_FULL_RECALC_APEX.name());
+    Test.stopTest();
+
+    Assert.areEqual(0, beforeEnqueueCount, 'a recalc with nothing in scope must never be consulted — it is dropped before any finalizer could release it');
+    Assert.areEqual(0, afterCompleteCount, 'nothing was claimed, so nothing should be released');
+  }
+
+  // ---- REVIEW R5-F5: a copy must not keep the conductor pointer while losing the delegate flag ----
+  @IsTest
+  static void copyingADelegateKeepsItFlagged() {
+    RollupFullBatchRecalculator conductor = buildBatchRecalc();
+    RollupFullBatchRecalculator delegate = buildBatchRecalc();
+    delegate.fullRecalcProcessor = conductor;
+    delegate.isDelegatedInnerRollup = true;
+
+    Test.startTest();
+    // getAsyncRollup builds copies through this constructor; one that inherits the conductor
+    // pointer but resets the flag is a delegate licensed to release
+    RollupAsyncProcessor copied = new RollupAsyncProcessor(delegate);
+    Test.stopTest();
+
+    Assert.areEqual(conductor, copied.fullRecalcProcessor, 'precondition: the copy inherited the conductor pointer');
+    Assert.isTrue(copied.isDelegatedInnerRollup, 'the delegate flag must travel with the conductor pointer, never apart from it');
+  }
+
   // ---- REVIEW R3-F1: suppressing one rollup group must not cancel the others ----
   @IsTest
   static void suppressedConductorStillRunsTheOtherRollupGroups() {

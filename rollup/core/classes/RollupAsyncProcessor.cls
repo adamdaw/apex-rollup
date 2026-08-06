@@ -1284,6 +1284,10 @@ global virtual without sharing class RollupAsyncProcessor extends Rollup impleme
       if (hashedRollups.contains(hashedRollupKey)) {
         this.rollups.remove(index);
       } else if (rollup.rollupControl.ShouldAbortRun__c || this.rollupControl.ShouldAbortRun__c) {
+        // aborted rollups leave the tree HERE, before runCalc's release walk further down can see
+        // them, so the walk alone would miss a gate armed on one of them. Unlike the two branches
+        // below — which relocate a rollup that still runs — this one means it never runs at all.
+        rollup.releaseFullRecalcGate();
         this.rollups.remove(index);
       } else if (couldRunSync && shouldRunSyncDeferred == false) {
         this.calcItemReplacer?.resetShouldRunAs(RollupMetaPicklists.ShouldRunAs.Synchronous);

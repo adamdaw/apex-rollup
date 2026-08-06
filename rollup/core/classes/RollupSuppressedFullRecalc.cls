@@ -10,7 +10,8 @@
  * Whenever records are in scope — the normal case, and the only one where suppressing a duplicate
  * is worth anything — that resets the constructor's `isNoOp = true` back to false, so
  * `Rollup.addRollup` keeps this processor and `RollupAsyncProcessor`'s no-op guard passes it
- * through. It IS enqueued: the overrides below are what make it inert, not the flag. With no
+ * through. It survives into the processor tree and is driven like a real one — the overrides below
+ * are what make it inert, not the flag, and they are why no async work is ever enqueued. With no
  * records in scope the flag survives and `addRollup` drops it instead, which is equally correct
  * because there is no work either way.
  *

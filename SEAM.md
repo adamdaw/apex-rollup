@@ -23,6 +23,19 @@ CXS-300) **without forking rollup behavior**:
 - `extra-tests/classes/RollupFullRecalcGateTests.cls` — covers the seam in isolation (dormant-is-inert,
   fail-open paths, runToken stability).
 
+Two more files diverge for the seam's sake and are easy to lose in a rebase, because **nothing in the
+suite goes red if either is reverted to upstream** — check them by eye after every bump:
+
+- `RollupPlugin.cls` — `onlyUseMockPlugins`. Test-only: it lets a test assert "nothing is registered"
+  without the host org's real records deciding the answer. Revert it and the two no-gate tests start
+  consulting whatever the org has deployed, which is green here and red in the org that registers the
+  gate. Pure instrumentation; production behaviour is identical while the flag is false.
+- `RollupTests.cls` — the async-job stub in `fallsBackToRunningSyncWhenOutOfAsyncJobs` uses a literal
+  above any org's limit instead of upstream's `250001`. `DailyAsyncApexExecutions` scales with
+  licenses (259,400 in a 100+-seat org), so upstream's literal does not exceed it there and the test
+  fails in a real org. It passes either way under `aer`, so only a real org run catches a revert.
+  This one is a genuine upstream bug and is the best candidate to PR away.
+
 Six rules hold the seam together; breaking any of them reintroduces a bug we already shipped once:
 
 1. **Resolve the gate before building the context.** `RollupFullRecalcContext`'s constructor clones the
@@ -30,17 +43,24 @@ Six rules hold the seam together; breaking any of them reintroduces a bug we alr
    `Crypto.generateAesKey`. Build it first and the "dormant seam costs nothing" claim stops being true —
    every cursor-path full recalc pays for a context it throws away.
 2. **Arm the release before consulting `beforeEnqueue`.** `setFullRecalcGate` runs first so a policy that
-   claims its lock and then throws still gets its `afterComplete`. An unmatched release is a no-op by
-   construction (the gate matches on `runToken`), so arming early is free.
+   claims its lock and then throws still gets its `afterComplete`. This is safe only because the
+   interface REQUIRES an implementation to match a release against `context.getRunToken()` and no-op
+   an unmatched one — the framework does not enforce it. Arming early is free to us and paid for by
+   every gate implementer, so do not weaken that clause in `RollupFullRecalcGate` to make this rule
+   cheaper.
 3. **A recalc that is consulted but never enqueued must still be released.** The gate is consulted at
    BUILD time; `runCalc` decides at RUN time and has several exits that log and return without
    enqueueing anything — `isNoOp`, `RollupControl__mdt.ShouldAbortRun__c`, the
    `RollupSettings__c.IsEnabled__c` kill switch, and "no matching rollups". No job means no finalizer
    means no release, so `RollupAsyncProcessor.runCalc` calls `releaseFullRecalcGate()` on that join
    point and walks its `rollups` (the bailing processor is routinely a plain conductor holding the
-   gated one). Build-time filtering cannot cover this: an operator can flip `IsEnabled__c` off after
-   the consult and before the run. The one case that IS filtered at build time is the recalc that is
-   still `isNoOp` with `recordCount == 0`, which `addRollup` drops outright.
+   gated one). `ShouldAbortRun__c` needs a second release site: `ingestRollupControlData` prunes
+   aborted rollups out of `rollups` BEFORE that walk runs, so it releases each one as it removes it.
+   Build-time filtering cannot cover any of this — an operator can flip either switch after the
+   consult and before the run. The one case that IS filtered at build time is the recalc still
+   `isNoOp` with `recordCount == 0`, which `addRollup` drops outright: it is dropped before any
+   finalizer exists, so it must never be consulted in the first place
+   (`zeroRecordRecalcIsNeverConsulted`).
 4. **Only the cursor path may be gated, enforced at the consult site.** A non-cursor processor never
    fires `notifyGateComplete`, so consulting it takes a claim nothing gives back. The guard that
    makes this true is the one inside `applyFullRecalcGate`; the identical check in
@@ -105,7 +125,7 @@ Resolve conflicts (historically only in `extra-tests/testSuites/ApexRollupTestSu
 when upstream reorganizes tests). Then **verify with aer** before tagging:
 
 ```
-aer test rollup extra-tests --skip-errors -f RollupFullRecalcGateTests   # seam: expect 39/39
+aer test rollup extra-tests --skip-errors -f RollupFullRecalcGateTests   # seam: expect 42/42
 aer test rollup extra-tests --skip-errors -f ZZ                          # carries: expect 19/19
 ```
 
