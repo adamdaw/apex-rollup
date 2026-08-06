@@ -157,6 +157,9 @@ global virtual without sharing class RollupAsyncProcessor extends Rollup impleme
     this.isFullRecalc = innerRollup.isFullRecalc;
     this.isCDCUpdate = innerRollup.isCDCUpdate;
     this.fullRecalcProcessor = innerRollup.fullRecalcProcessor;
+    // carried WITH the conductor pointer, never apart from it: a copy that keeps the pointer but
+    // resets the flag is a delegate licensed to release, which is the exact split rule 6 forbids
+    this.isDelegatedInnerRollup = innerRollup.isDelegatedInnerRollup;
     this.stackDepth = innerRollup.stackDepth;
     this.calcItemReplacer = innerRollup.calcItemReplacer;
     this.lookupItems = innerRollup.lookupItems;
@@ -314,9 +317,27 @@ global virtual without sharing class RollupAsyncProcessor extends Rollup impleme
     if (logMessage != null) {
       this.logger.log(logMessage, System.LoggingLevel.INFO);
       rollupProcessId = logMessage;
+      // Every branch that lands here decided NOT to run: no-op, ShouldAbortRun__c, the
+      // RollupSettings__c kill switch, or no matching rollups. The gate was consulted back at BUILD
+      // time, so nothing downstream will ever release a claim taken for this recalc — no job is
+      // enqueued and no finalizer fires. Releasing here is the only thing standing between an
+      // operator flipping IsEnabled__c off during a data load and every gated rollup group staying
+      // claimed until its TTL expires.
+      this.releaseFullRecalcGate();
     }
     this.logger.save();
     return rollupProcessId;
+  }
+
+  /**
+   * @description Releases any full-recalc gate armed anywhere in this processor's tree. Only
+   * `RollupFullRecalcProcessor` can carry a gate, but the processor whose `runCalc` bails is
+   * routinely a plain conductor holding the gated one in `rollups` — so this walks down.
+   */
+  protected virtual void releaseFullRecalcGate() {
+    for (RollupAsyncProcessor innerRoll : this.rollups) {
+      innerRoll.releaseFullRecalcGate();
+    }
   }
 
   protected virtual RollupRepository preStart() {

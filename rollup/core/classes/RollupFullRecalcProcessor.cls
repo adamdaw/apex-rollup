@@ -190,6 +190,12 @@ global abstract without sharing class RollupFullRecalcProcessor extends RollupAs
     return new RollupRepository(this.runAsMode).setArg(this.objIds).setArg('recordIds', this.recordIds).setQuery(this.queryString);
   }
 
+  protected override void releaseFullRecalcGate() {
+    this.notifyGateComplete();
+    super.releaseFullRecalcGate();
+  }
+
+  @TestVisible
   protected List<RollupAsyncProcessor> getDelegatedFullRecalcRollups(List<SObject> calcItems) {
     for (Schema.SObjectType intermediateGrandparent : this.getOldIntermediateGrandparents().keySet()) {
       for (Id resetId : this.getOldIntermediateGrandparents().get(intermediateGrandparent)) {

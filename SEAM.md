@@ -32,13 +32,21 @@ Six rules hold the seam together; breaking any of them reintroduces a bug we alr
 2. **Arm the release before consulting `beforeEnqueue`.** `setFullRecalcGate` runs first so a policy that
    claims its lock and then throws still gets its `afterComplete`. An unmatched release is a no-op by
    construction (the gate matches on `runToken`), so arming early is free.
-3. **Don't consult the gate for a recalc that will never enqueue.** A processor that is still `isNoOp`
-   with `recordCount == 0` is dropped by `addRollup`, so no finalizer would ever release a claim taken
-   for it.
-4. **Only the cursor path may be gated, checked at the consult site itself.** A non-cursor processor
-   never fires `notifyGateComplete`, so consulting it takes a claim nothing gives back. The caller
-   filters, and `applyFullRecalcGate` re-checks — a comment is not a guard, and the failure mode is a
-   silently stranded lock.
+3. **A recalc that is consulted but never enqueued must still be released.** The gate is consulted at
+   BUILD time; `runCalc` decides at RUN time and has several exits that log and return without
+   enqueueing anything — `isNoOp`, `RollupControl__mdt.ShouldAbortRun__c`, the
+   `RollupSettings__c.IsEnabled__c` kill switch, and "no matching rollups". No job means no finalizer
+   means no release, so `RollupAsyncProcessor.runCalc` calls `releaseFullRecalcGate()` on that join
+   point and walks its `rollups` (the bailing processor is routinely a plain conductor holding the
+   gated one). Build-time filtering cannot cover this: an operator can flip `IsEnabled__c` off after
+   the consult and before the run. The one case that IS filtered at build time is the recalc that is
+   still `isNoOp` with `recordCount == 0`, which `addRollup` drops outright.
+4. **Only the cursor path may be gated, enforced at the consult site.** A non-cursor processor never
+   fires `notifyGateComplete`, so consulting it takes a claim nothing gives back. The guard that
+   makes this true is the one inside `applyFullRecalcGate`; the identical check in
+   `buildFullRecalcRollup` is a cost optimisation that skips gate resolution and context
+   construction, not a second safety net. Delete the caller's and nothing breaks; delete the
+   callee's and `nonCursorProcessorIsNotGated` goes red.
 5. **The suppression substitute must pass on the conductor role.** `performBulkFullRecalc` promotes
    `processors[0]` and hangs the other calc-item types off its `rollups`. A substitute that lands
    there and returns early cancels rollup groups the gate never suppressed — silently, no job and no
@@ -78,6 +86,12 @@ suppression is the fork's, not
 upstream's: scanning the upstream file in isolation returns zero violations. If a bump makes the
 suppression unnecessary, drop it rather than carrying it.
 
+**`RollupFullRecalcGate` — `sfge:UnimplementedType` (Sev4, not suppressed).** `npm run scan` reports
+exactly one violation on this fork and this is it: "Extend, implement, or delete interface
+RollupFullRecalcGate". It is structural and permanent — a dormant seam has no in-fork implementer by
+definition, and the host org supplies one. Sev4 does not fail the gate, so it is left visible rather
+than suppressed; a suppression would hide the day the seam genuinely goes unused.
+
 ## Preserving the divergence across an upstream bump
 
 The whole stack (carries + seam) is a linear series on top of the upstream base tag. To catch up:
@@ -91,7 +105,7 @@ Resolve conflicts (historically only in `extra-tests/testSuites/ApexRollupTestSu
 when upstream reorganizes tests). Then **verify with aer** before tagging:
 
 ```
-aer test rollup extra-tests --skip-errors -f RollupFullRecalcGateTests   # seam: expect 37/37
+aer test rollup extra-tests --skip-errors -f RollupFullRecalcGateTests   # seam: expect 39/39
 aer test rollup extra-tests --skip-errors -f ZZ                          # carries: expect 19/19
 ```
 
@@ -100,7 +114,12 @@ Tag the result `v<upstream>-vacatia.<n>` and vendor it into the Vacatia Salesfor
 `RollupFullRecalcTests` fail under aer on a **clean** upstream checkout too — they are aer-vs-org
 environment gaps, not regressions; confirm the same failures exist on the clean upstream tag before
 worrying about them. The fastest way to confirm is a throwaway worktree on the base
-(`git worktree add /tmp/wt <base-tag>`) and the same `aer` filter — as of v1.7.44 that is 2 in
-`RollupFullRecalcTests` (`shouldBatchForFullRecalcWhenOverLimits`,
-`addsCabooseForMultipleFullRecalcsToDifferentParents`) and 5 state-related ones in
-`RollupCalculatorTests`.
+(`git worktree add /tmp/wt <base-tag>`) and the same `aer` filter, then
+`git worktree remove /tmp/wt --force`.
+
+As of v1.7.44 the **unfiltered** `aer test rollup extra-tests --skip-errors` baseline is **40
+failures across 9 classes** — `RollupDateLiteralTests` (17), `RollupCalculatorTests` (5),
+`RollupRecursionItemTests` (4), `InvocableDrivenTests` (4), `RollupStateTests` (3),
+`RollupFullRecalcTests` (2), `RollupIntegrationTests` (2), `CustomMetadataDrivenTests` (2),
+`RollupSObjectUpdaterTests` (1). All 40 reproduce on the clean base. Compare the failing SET against
+the base, not the count against zero.

@@ -643,6 +643,25 @@ public class RollupFullRecalcGateTests {
     Assert.areEqual(0, afterCompleteCount, 'a delegated inner rollup finishing must not release the conductor gate — an early release lets a duplicate in');
   }
 
+  // ---- REVIEW R4-F2: the production delegation path is what flags a delegate ----
+  @IsTest
+  static void delegationFlagsEveryInnerRollup() {
+    RollupFullBatchRecalculator conductor = buildBatchRecalc();
+    // the lookup has to resolve or the rollup is winnowed out and nothing is delegated
+    RollupChild__c calcItem = new RollupChild__c(Name = 'delegated child', RollupParent__c = RollupTestUtils.createId(RollupParent__c.SObjectType));
+
+    Test.startTest();
+    // the real call RollupDeferredFullRecalcProcessor.transformFullRecalcRollups makes
+    List<RollupAsyncProcessor> delegated = conductor.getDelegatedFullRecalcRollups(new List<SObject>{ calcItem });
+    Test.stopTest();
+
+    Assert.isFalse(delegated.isEmpty(), 'precondition: the conductor delegated at least one inner rollup');
+    for (RollupAsyncProcessor innerRoll : delegated) {
+      Assert.isTrue(innerRoll.isDelegatedInnerRollup, 'delegation must flag every inner rollup — the guard in finish() is inert otherwise');
+      Assert.areEqual(conductor, innerRoll.fullRecalcProcessor, 'a delegate must point at the conductor that produced it');
+    }
+  }
+
   // ---- F1: the REAL performBulkFullRecalc build path arms the release (terminal success) ----
   @IsTest
   static void realEntryPathArmsReleaseOnSuccess() {
@@ -685,7 +704,7 @@ public class RollupFullRecalcGateTests {
 
   // ---- Gate-4 BLOCKER: a throwing terminal finish() on the SUCCESS path must STILL release the gate ----
   // Without try/finally the finish() throw skips notifyGateComplete() and is NOT routed to
-  // handleUnhandledException (in-finalizer throw != job UNHANDLED_EXCEPTION) => stranded Slice-2 lock.
+  // handleUnhandledException (in-finalizer throw != job UNHANDLED_EXCEPTION) => a stranded gate claim.
   @IsTest
   static void terminalSuccessThrowingFinishStillReleasesGate() {
     afterCompleteCount = 0;
@@ -708,11 +727,11 @@ public class RollupFullRecalcGateTests {
     }
     // assert synchronously (mirrors realEntryPathArmsReleaseOnSuccess) — before any async flush
     Assert.isTrue(finishThrew, 'the throwing terminal finish() still propagates its exception');
-    Assert.areEqual(1, afterCompleteCount, 'the gate must be released even when terminal finish() throws (try/finally), else the Slice-2 lock deadlocks');
+    Assert.areEqual(1, afterCompleteCount, 'the gate must be released even when terminal finish() throws (try/finally), else a gate claim deadlocks');
     Test.stopTest();
   }
 
-  // ---- Slice-2 seam: the run token is minted, non-empty, and unique per context instance ----
+  // ---- Gate seam: the run token is minted, non-empty, and unique per context instance ----
   // Unlike the recalc key (stable + shared across concurrent duplicates of the same rollup group),
   // the run token is unique per invocation — that is the correlation a TTL-reclaimed key can't give.
   @IsTest
@@ -731,7 +750,7 @@ public class RollupFullRecalcGateTests {
     Test.stopTest();
   }
 
-  // ---- Slice-2 seam: the run token is stable across the async hop (echoed unchanged to afterComplete) ----
+  // ---- Gate seam: the run token is stable across the async hop (echoed unchanged to afterComplete) ----
   @IsTest
   static void runTokenIsStableFromBeforeEnqueueToAfterComplete() {
     capturedContext = null;
@@ -824,6 +843,31 @@ public class RollupFullRecalcGateTests {
     Assert.isFalse(result == original, 'the substitute must replace the original processor');
     Assert.areEqual(result.getNoProcessId(), runResult, 'the substitute performs no async work');
     Assert.areEqual(0, Limits.getQueueableJobs(), 'the suppressed substitute enqueues no async work');
+  }
+
+  // ---- REVIEW R4-F1: the kill switches abort AFTER the gate was consulted — release anyway ----
+  @IsTest
+  static void killSwitchReleasesTheClaimItNeverGotToUse() {
+    beforeEnqueueCount = 0;
+    afterCompleteCount = 0;
+    Rollup.defaultControl = new RollupControl__mdt(IsRollupLoggingEnabled__c = true, MaxLookupRowsBeforeBatching__c = 0);
+    registerGate(ProceedGate.class.getName());
+    insert as system new Contact(LastName = 'kill switch full recalc');
+    // the shape an operator produces by pausing rollups during a data load. Update the EXISTING
+    // org-default record from @TestSetup — a bare `upsert new RollupSettings__c(...)` leaves the
+    // true one in place, the recalc runs normally and its finalizer releases, which makes this
+    // whole test pass for the wrong reason.
+    RollupSettings__c settings = RollupSettings__c.getInstance();
+    settings.IsEnabled__c = false;
+    upsert as system settings;
+
+    Test.startTest();
+    String processId = Rollup.performBulkFullRecalc(grandparentMetas(), Rollup.InvocationPoint.FROM_FULL_RECALC_LWC.name());
+    Test.stopTest();
+
+    Assert.areEqual(1, beforeEnqueueCount, 'precondition: the gate was consulted at build time, before runCalc could bail');
+    Assert.isTrue(processId.contains('exiting early'), 'precondition: the kill switch aborted the recalc, so no finalizer will ever run. Got: ' + processId);
+    Assert.areEqual(1, afterCompleteCount, 'a recalc aborted after the consult must still release — nothing downstream can');
   }
 
   // ---- REVIEW R3-F1: suppressing one rollup group must not cancel the others ----

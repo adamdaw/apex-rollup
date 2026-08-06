@@ -5,6 +5,10 @@
  * (success or catchable failure). With no implementation registered via `RollupPlugin__mdt`
  * the framework behaves exactly as it does today (fail-open). The gate keys on the rollup
  * (see `RollupFullRecalcContext`), never on the caller. Shaped for contribution upstream.
+ *
+ * An implementation MUST be serializable: the framework holds the gate instance on the processor it
+ * enqueues, so a non-serializable member fails at the enqueue rather than at the gate call, and
+ * presents as a rollup defect rather than a gate one.
  */
 public interface RollupFullRecalcGate {
   /**
@@ -22,7 +26,10 @@ public interface RollupFullRecalcGate {
    * state and then throws is still released. The corollary is that this can fire for a recalc the
    * gate never finished deciding on, and therefore never claimed anything for: an implementation
    * must match the release against `context.getRunToken()` and treat an unmatched one as a no-op,
-   * never release unconditionally. It cannot fire, however, if the transaction dies
+   * never release unconditionally. The same holds when the framework itself abandons the recalc
+   * after the consult — an operator flipping `RollupSettings__c.IsEnabled__c` off, or
+   * `RollupControl__mdt.ShouldAbortRun__c` on — which releases without the recalc ever having run.
+   * It cannot fire, however, if the transaction dies
    * between the gate consult and the enqueue (an uncaught exception, a governor limit). An
    * implementation that claims state MUST therefore carry its own expiry — a TTL on the claim is
    * the only backstop for that window, and a policy without one can strand a claim forever.

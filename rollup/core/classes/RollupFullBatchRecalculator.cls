@@ -148,7 +148,7 @@ public without sharing virtual class RollupFullBatchRecalculator extends RollupF
         } finally {
           // terminal success (no more cursor pages): release the full-recalc gate once, even if
           // finish()'s final bookkeeping DML throws — an in-finalizer throw is NOT routed to
-          // handleUnhandledException, so without this finally the Slice-2 lock would strand.
+          // handleUnhandledException, so without this finally a gate claim would strand.
           this.conductor.notifyGateComplete();
         }
       }
