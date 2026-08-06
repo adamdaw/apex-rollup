@@ -2384,8 +2384,8 @@ global without sharing virtual class Rollup implements RollupLogger.ToStringObje
    * On `SUPPRESS` it returns a no-op substitute; on `PROCEED` (or a throwing gate) it returns
    * the original processor, carrying the gate + context through so completion can notify once.
    * The gate interaction is wrapped so any failure fails open (proceeds unchanged).
-   * Callers must pass only a cursor-path processor and a non-null gate — see the guards in
-   * `buildFullRecalcRollup`.
+   * A non-cursor processor is returned untouched, re-checked here rather than trusted from the
+   * caller — see `buildFullRecalcRollup` for why only the cursor path may be gated.
    * @param fullRecalc the full-recalc processor the framework built
    * @param gate the resolved gate to consult
    * @param context the immutable recalc context keyed on the rollup
@@ -2397,6 +2397,13 @@ global without sharing virtual class Rollup implements RollupLogger.ToStringObje
     RollupFullRecalcGate gate,
     RollupFullRecalcContext context
   ) {
+    // Only the cursor path may be gated (see buildFullRecalcRollup). Re-checked here instead of
+    // trusted from the caller because the failure mode is silent: a non-cursor processor never
+    // fires notifyGateComplete, so consulting the gate for one takes a claim nothing gives back,
+    // and a future second call site would strand it with no symptom until the TTL expires.
+    if ((fullRecalc instanceof RollupFullBatchRecalculator) == false) {
+      return fullRecalc;
+    }
     // Arm the release BEFORE consulting the gate. A policy that claims its state and then throws
     // would otherwise strand that claim until its TTL: the catch below leaves the processor
     // ungated, so notifyGateComplete could never fire for this recalc. Arming first is safe by

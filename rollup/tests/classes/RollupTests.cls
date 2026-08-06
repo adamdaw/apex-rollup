@@ -3115,7 +3115,12 @@ private class RollupTests {
     // HAS_EXCEEDED_ORG_ASYNC_JOB_LIMIT compares the stub against getLimit(). A literal 250001
     // therefore does NOT exceed the limit in such an org, so the rollup runs async, the queueable
     // never fires (this test omits Test.stopTest() on purpose) and the assertion reads 0.
-    RollupLimits.currentAsyncJobsUsed = System.OrgLimits.getMap().get('DailyAsyncApexExecutions').getLimit() + 1;
+    // derived, not hardcoded: DailyAsyncApexExecutions scales with licenses (259,400 in a
+    // 100+-seat org), so a literal "one over the default" is under the real limit and the
+    // rollup runs async instead of falling back. Null-guarded so a renamed key fails the
+    // assert rather than throwing here.
+    System.OrgLimit asyncLimit = System.OrgLimits.getMap().get('DailyAsyncApexExecutions');
+    RollupLimits.currentAsyncJobsUsed = asyncLimit == null ? 250001 : asyncLimit.getLimit() + 1;
 
     // specifically no Test.startTest()/Test.stopTest() to prove it's been run sync
     Rollup.sumFromApex(ContactPointAddress.PreferenceRank, ContactPointAddress.ParentId, Account.Id, Account.AnnualRevenue, Account.SObjectType).runCalc();

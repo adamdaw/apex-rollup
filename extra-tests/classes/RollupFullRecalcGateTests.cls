@@ -538,7 +538,7 @@ public class RollupFullRecalcGateTests {
     afterCompleteCount = 0;
     // a gate that both suppresses AND would count an afterComplete if the substitute wrongly released
     registerGate(SuppressAndCountCompleteGate.class.getName());
-    RollupFullRecalcProcessor original = stubProcessor();
+    RollupFullRecalcProcessor original = buildBatchRecalc();
 
     Test.startTest();
     RollupFullRecalcProcessor substitute = Rollup.applyFullRecalcGate(original, new SuppressAndCountCompleteGate(), buildContext());
@@ -722,7 +722,7 @@ public class RollupFullRecalcGateTests {
   @IsTest
   static void gateConsultedProceedReturnsOriginalProcessor() {
     beforeEnqueueCount = 0;
-    RollupFullRecalcProcessor original = stubProcessor();
+    RollupFullRecalcProcessor original = buildBatchRecalc();
 
     Test.startTest();
     RollupFullRecalcProcessor result = Rollup.applyFullRecalcGate(original, new ProceedGate(), buildContext());
@@ -736,7 +736,7 @@ public class RollupFullRecalcGateTests {
   // ---- AC3: SUPPRESS returns a substitute, not the cursor processor ----
   @IsTest
   static void suppressReturnsSubstituteNotBatchRecalculator() {
-    RollupFullRecalcProcessor original = stubProcessor();
+    RollupFullRecalcProcessor original = buildBatchRecalc();
 
     Test.startTest();
     RollupFullRecalcProcessor result = Rollup.applyFullRecalcGate(original, new SuppressGate(), buildContext());
@@ -748,6 +748,31 @@ public class RollupFullRecalcGateTests {
     Assert.isFalse(result == original, 'the substitute must replace the original processor');
     Assert.areEqual(result.getNoProcessId(), runResult, 'the substitute performs no async work');
     Assert.areEqual(0, Limits.getQueueableJobs(), 'the suppressed substitute enqueues no async work');
+  }
+
+  // ---- REVIEW R2-F2: a non-cursor processor is never gated, even when handed straight in ----
+  @IsTest
+  static void nonCursorProcessorIsNotGated() {
+    beforeEnqueueCount = 0;
+    // a deferred/small-set processor: it delegates to the regular queueable path, so no
+    // FullRecalcFinalizer ever fires notifyGateComplete for it and a claim taken here would never
+    // be released. buildFullRecalcRollup filters this shape out; the guard inside
+    // applyFullRecalcGate is what protects a future second call site, and this is its only proof.
+    RollupFullRecalcProcessor deferred = new RollupDeferredFullRecalcProcessor(
+      concatMetas(),
+      RollupChild__c.SObjectType,
+      'SELECT Id, Name, RollupParent__c FROM RollupChild__c',
+      new Set<String>(),
+      Rollup.InvocationPoint.FROM_APEX,
+      null
+    );
+
+    Test.startTest();
+    RollupFullRecalcProcessor result = Rollup.applyFullRecalcGate(deferred, new SuppressGate(), buildContext());
+    Test.stopTest();
+
+    Assert.areEqual(0, beforeEnqueueCount, 'a processor that never releases must not be consulted — the claim would strand');
+    Assert.isTrue(result == deferred, 'a non-cursor processor must come back untouched, even from a gate that suppresses');
   }
 
   // ---- AC4: completion notifies afterComplete once on terminal success ----
@@ -799,7 +824,7 @@ public class RollupFullRecalcGateTests {
   // ---- AC7: a throwing gate fails open (both call sites) ----
   @IsTest
   static void throwingGateFailsOpen() {
-    RollupFullRecalcProcessor original = stubProcessor();
+    RollupFullRecalcProcessor original = buildBatchRecalc();
     RollupFullRecalcContext context = buildContext();
 
     RollupFullRecalcProcessor releaseProcessor = stubProcessor();
@@ -829,7 +854,7 @@ public class RollupFullRecalcGateTests {
   static void claimThenThrowStillReleasesTheClaim() {
     claimCount = 0;
     afterCompleteCount = 0;
-    RollupFullRecalcProcessor original = stubProcessor();
+    RollupFullRecalcProcessor original = buildBatchRecalc();
 
     Test.startTest();
     RollupFullRecalcProcessor result = Rollup.applyFullRecalcGate(original, new ClaimThenThrowGate(), buildContext());

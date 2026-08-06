@@ -49,6 +49,18 @@ divergence to just the seam):
 - don't drop unchanged bystanders from `ChangedFieldsOnCalcItem` rollups.
 - `ZZ*` regression suite in `extra-tests/` guards all of the above.
 
+## 3. Analyzer suppressions the fork owns
+
+**`RollupCalculator` — `PMD.ExcessivePublicCount`.** Upstream sits at 19 of the 20 limit; the
+fork's `setCustomEvaluator` (needed so full-recalc bystander re-inclusion honours a caller-supplied
+`Evaluator`) is the 20th. It has to be public — `RollupAsyncProcessor` is not a subclass and Apex
+has no package-private. The alternatives were changing `setEvaluator`'s signature, rewriting ~35
+upstream test call sites, or threading the value through the virtual `Factory.getCalculator` and
+every calculator subclass constructor. Both are far more divergence than a count threshold is worth
+on a fork whose value is being a near-fast-forward of upstream. The suppression is the fork's, not
+upstream's: scanning the upstream file in isolation returns zero violations. If a bump makes the
+suppression unnecessary, drop it rather than carrying it.
+
 ## Preserving the divergence across an upstream bump
 
 The whole stack (carries + seam) is a linear series on top of the upstream base tag. To catch up:
@@ -62,7 +74,7 @@ Resolve conflicts (historically only in `extra-tests/testSuites/ApexRollupTestSu
 when upstream reorganizes tests). Then **verify with aer** before tagging:
 
 ```
-aer test rollup extra-tests --skip-errors -f RollupFullRecalcGateTests   # seam: expect 33/33
+aer test rollup extra-tests --skip-errors -f RollupFullRecalcGateTests   # seam: expect 34/34
 aer test rollup extra-tests --skip-errors -f ZZ                          # carries: expect 19/19
 ```
 
