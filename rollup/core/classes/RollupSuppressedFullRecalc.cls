@@ -10,10 +10,14 @@
  * Whenever records are in scope — the normal case, and the only one where suppressing a duplicate
  * is worth anything — that resets the constructor's `isNoOp = true` back to false, so
  * `Rollup.addRollup` keeps this processor and `RollupAsyncProcessor`'s no-op guard passes it
- * through. It survives into the processor tree and is driven like a real one — the overrides below
- * are what make it inert, not the flag, and they are why no async work is ever enqueued. With no
- * records in scope the flag survives and `addRollup` drops it instead, which is equally correct
- * because there is no work either way.
+ * through. It survives into the processor tree and is driven like a real one. With no records in
+ * scope the flag survives and `addRollup` drops it instead, which is equally correct because there
+ * is no work either way.
+ *
+ * `runCalc` below is what actually makes it inert on every path the framework drives today, and it
+ * returns before `startAsyncWork` or `performWork` can be reached — those two are unreachable
+ * belt-and-braces, kept because the cost of a substitute that quietly does real work is far higher
+ * than two dead overrides on a file the fork owns outright (no upstream rebase surface here).
  *
  * The gate is not carried through to this substitute on purpose. A suppressed run claimed nothing
  * of its own — the state it collided with belongs to the run already in flight — so there is
@@ -62,10 +66,6 @@ public without sharing class RollupSuppressedFullRecalc extends RollupFullRecalc
   @SuppressWarnings('PMD.EmptyStatementBlock')
   protected override void performWork() {
     // intentional no-op: the gate suppressed this concurrent duplicate full recalculation
-  }
-
-  protected override List<RollupAsyncProcessor> transformFullRecalcRollups() {
-    return new List<RollupAsyncProcessor>();
   }
 
   protected override String getTypeName() {

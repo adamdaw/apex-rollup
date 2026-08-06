@@ -58,9 +58,9 @@ global abstract without sharing class RollupFullRecalcProcessor extends RollupAs
    * the finalizer.
    *
    * `hasNotifiedGate` is a per-INSTANCE latch, which is what the cursor chain needs — each page's
-   * Queueable is the serialized previous instance, so the latch travels with it. It does not span
-   * a sibling COPY, so every release site must be one that only the owning processor reaches:
-   * the cursor finalizer, and `RollupAsyncProcessor.finish` guarded on `isDelegatedInnerRollup`.
+   * Queueable is the serialized previous instance, so the latch travels with it. It does NOT span a
+   * sibling copy, so every release site must be one that only the owning processor reaches. Both
+   * current sites qualify; see SEAM.md rule 6 for why a delegated inner rollup cannot reach one.
    */
   public void notifyGateComplete() {
     if (this.fullRecalcGate == null || this.hasNotifiedGate) {
@@ -195,7 +195,6 @@ global abstract without sharing class RollupFullRecalcProcessor extends RollupAs
     super.releaseFullRecalcGate();
   }
 
-  @TestVisible
   protected List<RollupAsyncProcessor> getDelegatedFullRecalcRollups(List<SObject> calcItems) {
     for (Schema.SObjectType intermediateGrandparent : this.getOldIntermediateGrandparents().keySet()) {
       for (Id resetId : this.getOldIntermediateGrandparents().get(intermediateGrandparent)) {
@@ -210,7 +209,6 @@ global abstract without sharing class RollupFullRecalcProcessor extends RollupAs
     }
     for (RollupAsyncProcessor innerRoll : processor.rollups) {
       innerRoll.fullRecalcProcessor = this;
-      innerRoll.isDelegatedInnerRollup = true;
       innerRoll.isFullRecalc = this.getShouldResetParentRecordsDuringRecalculation();
       innerRoll.calcItems = calcItems;
     }

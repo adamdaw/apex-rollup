@@ -179,9 +179,11 @@ public class RollupFullRecalcGateTests {
     );
   }
 
-  // Two rollups on DIFFERENT calc-item types, so transformWrappedMetadataToFullRecalcRollups
-  // returns two processors and the conductor-promotion branch of performBulkFullRecalc is reached.
-  static List<Rollup__mdt> bulkMetasForTwoCalcItemTypes() {
+  // THREE rollups on three DIFFERENT calc-item types, so transformWrappedMetadataToFullRecalcRollups
+  // returns three processors and the conductor-promotion branch of performBulkFullRecalc is reached
+  // with a non-empty tail. Two would also reach the branch, but after `remove(0)` the tail is empty
+  // and the substitute's `rollups.addAll(...)` becomes a no-op that no assertion can see.
+  static List<Rollup__mdt> bulkMetasForThreeCalcItemTypes() {
     return new List<Rollup__mdt>{
       new Rollup__mdt(
         DeveloperName = 'Contact_To_Account_Count',
@@ -201,6 +203,16 @@ public class RollupFullRecalcGateTests {
         LookupFieldOnLookupObject__c = 'Id',
         RollupFieldOnCalcItem__c = 'Amount',
         RollupFieldOnLookupObject__c = 'AnnualRevenue',
+        RollupOperation__c = 'SUM'
+      ),
+      new Rollup__mdt(
+        DeveloperName = 'Application_To_Parent_Application_Sum',
+        CalcItem__c = 'Application__c',
+        LookupObject__c = 'ParentApplication__c',
+        LookupFieldOnCalcItem__c = 'ParentApplication__c',
+        LookupFieldOnLookupObject__c = 'Id',
+        RollupFieldOnCalcItem__c = 'Engagement_Score__c',
+        RollupFieldOnLookupObject__c = 'Engagement_Rollup__c',
         RollupOperation__c = 'SUM'
       )
     };
@@ -620,48 +632,6 @@ public class RollupFullRecalcGateTests {
     Assert.areEqual(1, afterCompleteCount, 'the Batchable failsafe completion path must release the gate exactly once');
   }
 
-  // ---- REVIEW R3-F2: a delegated inner rollup finishing must NOT release the conductor's gate ----
-  @IsTest
-  static void delegatedInnerRollupDoesNotReleaseTheGate() {
-    afterCompleteCount = 0;
-    RollupFullBatchRecalculator conductor = buildBatchRecalc();
-    conductor.setFullRecalcGate(new ProceedGate(), buildContext());
-    // mirror what RollupFullRecalcProcessor.getDelegatedFullRecalcRollups sets on each inner
-    // rollup: it points at the conductor and is flagged as a delegate. In production this object
-    // is a serialized copy whose own hasNotifiedGate is false, so the latch cannot stop it —
-    // the flag is what stops it.
-    RollupFullBatchRecalculator delegate = buildBatchRecalc();
-    delegate.setFullRecalcGate(new ProceedGate(), buildContext());
-    delegate.fullRecalcProcessor = conductor;
-    delegate.isDelegatedInnerRollup = true;
-
-    Test.startTest();
-    // the delegate's own Batchable completion, while the conductor is still paging
-    delegate.finish((Database.BatchableContext) null);
-    Test.stopTest();
-
-    Assert.areEqual(0, afterCompleteCount, 'a delegated inner rollup finishing must not release the conductor gate — an early release lets a duplicate in');
-  }
-
-  // ---- REVIEW R4-F2: the production delegation path is what flags a delegate ----
-  @IsTest
-  static void delegationFlagsEveryInnerRollup() {
-    RollupFullBatchRecalculator conductor = buildBatchRecalc();
-    // the lookup has to resolve or the rollup is winnowed out and nothing is delegated
-    RollupChild__c calcItem = new RollupChild__c(Name = 'delegated child', RollupParent__c = RollupTestUtils.createId(RollupParent__c.SObjectType));
-
-    Test.startTest();
-    // the real call RollupDeferredFullRecalcProcessor.transformFullRecalcRollups makes
-    List<RollupAsyncProcessor> delegated = conductor.getDelegatedFullRecalcRollups(new List<SObject>{ calcItem });
-    Test.stopTest();
-
-    Assert.isFalse(delegated.isEmpty(), 'precondition: the conductor delegated at least one inner rollup');
-    for (RollupAsyncProcessor innerRoll : delegated) {
-      Assert.isTrue(innerRoll.isDelegatedInnerRollup, 'delegation must flag every inner rollup — the guard in finish() is inert otherwise');
-      Assert.areEqual(conductor, innerRoll.fullRecalcProcessor, 'a delegate must point at the conductor that produced it');
-    }
-  }
-
   // ---- F1: the REAL performBulkFullRecalc build path arms the release (terminal success) ----
   @IsTest
   static void realEntryPathArmsReleaseOnSuccess() {
@@ -866,7 +836,12 @@ public class RollupFullRecalcGateTests {
     Test.stopTest();
 
     Assert.areEqual(1, beforeEnqueueCount, 'precondition: the gate was consulted at build time, before runCalc could bail');
-    Assert.isTrue(processId.contains('exiting early'), 'precondition: the kill switch aborted the recalc, so no finalizer will ever run. Got: ' + processId);
+    // name the switch, not just 'exiting early' — all three bail branches emit that substring, so
+    // the looser assert would still pass if the fixture silently landed on a different one
+    Assert.isTrue(
+      processId.contains('IsEnabled__c is false'),
+      'precondition: the IsEnabled__c kill switch aborted the recalc, so no finalizer will ever run. Got: ' + processId
+    );
     Assert.areEqual(1, afterCompleteCount, 'a recalc aborted after the consult must still release — nothing downstream can');
   }
 
@@ -887,7 +862,11 @@ public class RollupFullRecalcGateTests {
     Test.stopTest();
 
     Assert.areEqual(1, beforeEnqueueCount, 'precondition: the gate was consulted at build time, before the control record could abort the run');
-    Assert.isTrue(processId.contains('exiting early'), 'precondition: ShouldAbortRun__c aborted the recalc, so no finalizer will ever run. Got: ' + processId);
+    // name the switch: 'exiting early' alone cannot tell this branch from the IsEnabled__c one
+    Assert.isTrue(
+      processId.contains('ShouldAbortRun__c set to true'),
+      'precondition: ShouldAbortRun__c aborted the recalc, so no finalizer will ever run. Got: ' + processId
+    );
     Assert.areEqual(1, afterCompleteCount, 'an aborted recalc must release even though it was pruned out of the tree before the walk');
   }
 
@@ -914,35 +893,13 @@ public class RollupFullRecalcGateTests {
     Assert.areEqual(0, afterCompleteCount, 'nothing was claimed, so nothing should be released');
   }
 
-  // ---- REVIEW R5-F5: a copy must not keep the conductor pointer while losing the delegate flag ----
-  @IsTest
-  static void copyingADelegateKeepsItFlagged() {
-    RollupFullBatchRecalculator conductor = buildBatchRecalc();
-    RollupFullBatchRecalculator delegate = buildBatchRecalc();
-    delegate.fullRecalcProcessor = conductor;
-    delegate.isDelegatedInnerRollup = true;
-
-    Test.startTest();
-    // getAsyncRollup builds copies through this constructor; one that inherits the conductor
-    // pointer but resets the flag is a delegate licensed to release
-    RollupAsyncProcessor copied = new RollupAsyncProcessor(delegate);
-    Test.stopTest();
-
-    Assert.areEqual(conductor, copied.fullRecalcProcessor, 'precondition: the copy inherited the conductor pointer');
-    Assert.isTrue(copied.isDelegatedInnerRollup, 'the delegate flag must travel with the conductor pointer, never apart from it');
-  }
-
   // ---- REVIEW R3-F1: suppressing one rollup group must not cancel the others ----
   @IsTest
   static void suppressedConductorStillRunsTheOtherRollupGroups() {
-    beforeEnqueueCount = 0;
-    // MaxLookupRowsBeforeBatching__c = 0 forces the cursor path, which is the only gated one;
-    // ShouldRunAs__c left null keeps performBulkFullRecalc's conductor-promotion branch in play
-    Rollup.defaultControl = new RollupControl__mdt(IsRollupLoggingEnabled__c = true, MaxLookupRowsBeforeBatching__c = 0);
-    registerGate(SuppressFirstThenProceedGate.class.getName());
-
-    // two calc-item types, so performBulkFullRecalc promotes processors[0] to conductor and hangs
-    // the second group off its rollups. The gate suppresses whichever lands first.
+    // three calc-item types, so performBulkFullRecalc promotes processors[0] to conductor and hangs
+    // the other two off its rollups. The gate suppresses whichever lands first. Three and not two:
+    // with two, the substitute's own `rollups.addAll(tail)` operates on an already-empty tail, so
+    // deleting that line is invisible and the promotion is only half proven.
     Account parentAccount = [SELECT Id FROM Account WITH SYSTEM_MODE];
     insert as system new Contact(LastName = 'gate bulk contact', AccountId = parentAccount.Id);
     insert as system new Opportunity(
@@ -952,23 +909,56 @@ public class RollupFullRecalcGateTests {
       AccountId = parentAccount.Id,
       Amount = 1000
     );
+    ParentApplication__c parentApp = new ParentApplication__c(Name = 'gate bulk parent app', Account__c = parentAccount.Id);
+    insert as system parentApp;
+    insert as system new Application__c(Name = 'gate bulk app', ParentApplication__c = parentApp.Id, Engagement_Score__c = 7);
+
+    // set AFTER the fixtures: these inserts fire CMT-driven rollups of their own, and those
+    // overwrite Rollup.defaultControl. Set it first and every processor here takes the deferred
+    // path, which is never gated — the gate would see nothing and the test would prove nothing.
+    // MaxLookupRowsBeforeBatching__c = 0 forces the cursor path; ShouldRunAs__c left null keeps
+    // performBulkFullRecalc's conductor-promotion branch in play.
+    beforeEnqueueCount = 0;
+    Rollup.defaultControl = new RollupControl__mdt(IsRollupLoggingEnabled__c = true, MaxLookupRowsBeforeBatching__c = 0);
+    registerGate(SuppressFirstThenProceedGate.class.getName());
 
     Test.startTest();
-    Rollup.performBulkFullRecalc(bulkMetasForTwoCalcItemTypes(), Rollup.InvocationPoint.FROM_FULL_RECALC_LWC.name());
+    Rollup.performBulkFullRecalc(bulkMetasForThreeCalcItemTypes(), Rollup.InvocationPoint.FROM_FULL_RECALC_LWC.name());
     Test.stopTest();
 
-    Assert.areEqual(2, beforeEnqueueCount, 'precondition: the gate saw both rollup groups');
-    // order-independent: exactly one group was suppressed, so exactly one parent must be rolled up.
-    // Before the fix the substitute short-circuited runCalc as conductor and NEITHER ran.
+    Assert.areEqual(3, beforeEnqueueCount, 'precondition: the gate saw all three rollup groups');
+    // order-independent: exactly one group was suppressed, so the other TWO must both be rolled up.
+    // Before the fix the substitute short-circuited runCalc as conductor and none of them ran.
     Account rolledUp = [SELECT AnnualRevenue, NumberOfEmployees FROM Account WHERE Id = :parentAccount.Id WITH SYSTEM_MODE];
     Integer rolledUpParents = 0;
+    if ([SELECT Engagement_Rollup__c FROM ParentApplication__c WHERE Id = :parentApp.Id WITH SYSTEM_MODE].Engagement_Rollup__c == 7) {
+      rolledUpParents++;
+    }
     if (rolledUp.AnnualRevenue == 1000) {
       rolledUpParents++;
     }
     if (rolledUp.NumberOfEmployees == 1) {
       rolledUpParents++;
     }
-    Assert.areEqual(1, rolledUpParents, 'the group the gate proceeded must still run when the suppressed one is promoted to conductor');
+    Assert.areEqual(2, rolledUpParents, 'both groups the gate proceeded must still run when the suppressed one is promoted to conductor');
+  }
+
+  // ---- REVIEW R6-A: the parent-reset processor passes the type test and must still not be gated ----
+  @IsTest
+  static void parentResetProcessorIsNotGated() {
+    beforeEnqueueCount = 0;
+    // it EXTENDS RollupFullBatchRecalculator, so `instanceof` alone waves it through. It overrides
+    // runCalc without calling super, so no bail-out release and no finalizer ever fire for it —
+    // gating one strands the claim outright.
+    RollupFullRecalcProcessor parentReset = stubProcessor();
+
+    Test.startTest();
+    RollupFullRecalcProcessor result = Rollup.applyFullRecalcGate(parentReset, new SuppressGate(), buildContext());
+    Test.stopTest();
+
+    Assert.isTrue(parentReset instanceof RollupFullBatchRecalculator, 'precondition: it satisfies the type test the guard starts from');
+    Assert.areEqual(0, beforeEnqueueCount, 'a processor that never releases must not be consulted, whatever it extends');
+    Assert.isTrue(result == parentReset, 'it must come back untouched, even from a gate that suppresses');
   }
 
   // ---- REVIEW R2-F2: a non-cursor processor is never gated, even when handed straight in ----
@@ -1116,6 +1106,23 @@ public class RollupFullRecalcGateTests {
     Test.stopTest();
 
     Assert.isNull(gate, 'a FullRecalcGateClass parameter attached to a DIFFERENT plugin must not activate this gate');
+  }
+
+  // ---- REVIEW R6-F5: removing the plugin record disarms the gate, parameter or no parameter ----
+  @IsTest
+  static void removingThePluginRecordDisarmsTheGate() {
+    RollupPlugin.onlyUseMockPlugins = true;
+    // the operator's emergency lever: delete the FullRecalcGate plugin record and the seam goes
+    // dormant even though the FullRecalcGateClass parameter is still deployed. Without the
+    // plugin-record null check the parameter alone would keep resolving a live gate.
+    RollupPlugin.pluginMocks = new List<RollupPlugin__mdt>();
+    RollupPlugin.parameterMock = new RollupPluginParameter__mdt(DeveloperName = Rollup.FULL_RECALC_GATE_PARAM_NAME, Value__c = ProceedGate.class.getName());
+
+    Test.startTest();
+    RollupFullRecalcGate gate = Rollup.resolveFullRecalcGate();
+    Test.stopTest();
+
+    Assert.isNull(gate, 'with the plugin record gone the gate must resolve null even though its parameter survives');
   }
 
   // ---- REVIEW R3-F3: an UNATTACHED parameter still activates — documenting the real behaviour ----

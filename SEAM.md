@@ -41,7 +41,9 @@ Six rules hold the seam together; breaking any of them reintroduces a bug we alr
 1. **Resolve the gate before building the context.** `RollupFullRecalcContext`'s constructor clones the
    metadata list, copies every in-scope parent id, derives the key and mints a token via
    `Crypto.generateAesKey`. Build it first and the "dormant seam costs nothing" claim stops being true —
-   every cursor-path full recalc pays for a context it throws away.
+   every cursor-path full recalc pays for a context it throws away. **Not pinned by a test**: delete
+   the `gate == null` short-circuit and the suite stays green, because the outcome is identical and
+   only the cost differs. Check this one by eye on every bump.
 2. **Arm the release before consulting `beforeEnqueue`.** `setFullRecalcGate` runs first so a policy that
    claims its lock and then throws still gets its `afterComplete`. This is safe only because the
    interface REQUIRES an implementation to match a release against `context.getRunToken()` and no-op
@@ -61,23 +63,37 @@ Six rules hold the seam together; breaking any of them reintroduces a bug we alr
    `isNoOp` with `recordCount == 0`, which `addRollup` drops outright: it is dropped before any
    finalizer exists, so it must never be consulted in the first place
    (`zeroRecordRecalcIsNeverConsulted`).
-4. **Only the cursor path may be gated, enforced at the consult site.** A non-cursor processor never
-   fires `notifyGateComplete`, so consulting it takes a claim nothing gives back. The guard that
-   makes this true is the one inside `applyFullRecalcGate`; the identical check in
+4. **Only a processor that will actually release may be gated, enforced at the consult site.** The
+   guard that makes this true is the one inside `applyFullRecalcGate`; the near-identical check in
    `buildFullRecalcRollup` is a cost optimisation that skips gate resolution and context
    construction, not a second safety net. Delete the caller's and nothing breaks; delete the
    callee's and `nonCursorProcessorIsNotGated` goes red.
+
+   The test is not `instanceof RollupFullBatchRecalculator` alone. `RollupParentResetProcessor`
+   **extends** that class, so it passes — and it overrides `runCalc` without calling super, so
+   neither the rule-3 bail-out release nor a finalizer ever runs for it. It is excluded by name.
+   Anything else that overrides `runCalc` wholesale needs the same treatment; the type hierarchy
+   does not express "will release", so this guard has to enumerate.
+
 5. **The suppression substitute must pass on the conductor role.** `performBulkFullRecalc` promotes
    `processors[0]` and hangs the other calc-item types off its `rollups`. A substitute that lands
    there and returns early cancels rollup groups the gate never suppressed — silently, no job and no
    log. `RollupSuppressedFullRecalc.runCalc` promotes the first live processor instead, mirroring
    `RollupParentResetProcessor.arrangeCabooses`.
-6. **Only the conductor releases.** `hasNotifiedGate` is a per-instance latch: it rides the cursor
-   chain (each page is the serialized previous instance) but not a sibling copy. A delegated inner
-   rollup carries its own copy of the conductor, so `RollupAsyncProcessor.finish` skips the release
-   when `isDelegatedInnerRollup` — otherwise `afterComplete` fires while the conductor is still
-   paging, and an early release lets in the duplicate the policy exists to stop. A TTL cannot
-   backstop that direction.
+6. **Only the conductor may release.** `hasNotifiedGate` is a per-instance latch: it rides the cursor
+   chain (each page is the serialized previous instance) but does NOT span a sibling copy. So a
+   release site reachable by a delegated inner rollup would fire `afterComplete` from that rollup's
+   own copy of the conductor while the real conductor is still paging — an early release, which for
+   a suppression policy is worse than a late one and which a TTL cannot backstop.
+
+   No such site exists today, and the reason is narrow: `QueueableProcessor.execute` routes a child
+   to `finish(BatchableContext)` only when `fullRecalcProcessor.isBatch() != true`, and the only
+   gateable conductor is `RollupFullBatchRecalculator`, whose `isBatch()` is always true — so its
+   delegates always take `executeFinish()` instead. `RollupDeferredFullRecalcProcessor` does reach
+   that branch but is never gated. **This rule is held by that routing, not by a guard.** An earlier
+   revision of this fork carried an `isDelegatedInnerRollup` flag to enforce it; it was removed as
+   speculative divergence on upstream-owned files once the routing was traced. If a bump changes
+   either `isBatch()` or that branch in `execute`, re-derive this before shipping.
 
 **Zero behavior change unless a gate class is registered.** With no `RollupPlugin__mdt` registration the
 seam is inert, so it is safe to carry on top of any upstream release.
@@ -125,7 +141,7 @@ Resolve conflicts (historically only in `extra-tests/testSuites/ApexRollupTestSu
 when upstream reorganizes tests). Then **verify with aer** before tagging:
 
 ```
-aer test rollup extra-tests --skip-errors -f RollupFullRecalcGateTests   # seam: expect 42/42
+aer test rollup extra-tests --skip-errors -f RollupFullRecalcGateTests   # seam: expect 41/41
 aer test rollup extra-tests --skip-errors -f ZZ                          # carries: expect 19/19
 ```
 

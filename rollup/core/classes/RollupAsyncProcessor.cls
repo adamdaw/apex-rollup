@@ -30,13 +30,6 @@ global virtual without sharing class RollupAsyncProcessor extends Rollup impleme
   // performWork; a unit test driving finish(BatchableContext) directly supplies that reference.
   @TestVisible
   protected RollupFullRecalcProcessor fullRecalcProcessor;
-  // Set on the inner rollups a full recalc delegates to (RollupFullRecalcProcessor
-  // .getDelegatedFullRecalcRollups). They point at the conductor but are NOT it, and when one goes
-  // async as its own Batchable it carries a serialized COPY of the conductor — its own
-  // hasNotifiedGate reads false, so releasing the gate from its finish() would fire afterComplete
-  // while the real conductor is still paging. Only the conductor itself may release.
-  @TestVisible
-  protected Boolean isDelegatedInnerRollup = false;
   protected final SObjectType calcItemType;
   protected final Set<String> recordIds;
   protected RollupFinalizer finalizer;
@@ -157,9 +150,6 @@ global virtual without sharing class RollupAsyncProcessor extends Rollup impleme
     this.isFullRecalc = innerRollup.isFullRecalc;
     this.isCDCUpdate = innerRollup.isCDCUpdate;
     this.fullRecalcProcessor = innerRollup.fullRecalcProcessor;
-    // carried WITH the conductor pointer, never apart from it: a copy that keeps the pointer but
-    // resets the flag is a delegate licensed to release, which is the exact split rule 6 forbids
-    this.isDelegatedInnerRollup = innerRollup.isDelegatedInnerRollup;
     this.stackDepth = innerRollup.stackDepth;
     this.calcItemReplacer = innerRollup.calcItemReplacer;
     this.lookupItems = innerRollup.lookupItems;
@@ -266,12 +256,12 @@ global virtual without sharing class RollupAsyncProcessor extends Rollup impleme
         // container-agnostic release: the Batchable failsafe completion path releases the gate too
         // (the cursor-Queueable finalizer path is the other; hasNotifiedGate keeps this idempotent),
         // even if finish() throws — else the lock would strand.
-        // Delegated inner rollups are excluded: see isDelegatedInnerRollup. They finish while the
-        // conductor is still paging, and an early release lets a duplicate in — the exact thing a
-        // suppression policy exists to prevent, and one a TTL cannot backstop.
-        if (this.isDelegatedInnerRollup == false) {
-          this.fullRecalcProcessor?.notifyGateComplete();
-        }
+        // Only the conductor reaches here: execute() routes a delegated inner rollup to
+        // executeFinish() whenever its conductor isBatch(), and the only gateable conductor is a
+        // RollupFullBatchRecalculator, for which that is always true. See SEAM.md rule 6 — if that
+        // routing ever changes, a delegate's serialized copy would release while the conductor is
+        // still paging.
+        this.fullRecalcProcessor?.notifyGateComplete();
       }
     }
     context = context ?? new AdditionalContext(this.getNoProcessId());

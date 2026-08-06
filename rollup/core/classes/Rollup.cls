@@ -2398,10 +2398,15 @@ global without sharing virtual class Rollup implements RollupLogger.ToStringObje
     RollupFullRecalcContext context
   ) {
     // Only the cursor path may be gated (see buildFullRecalcRollup). Re-checked here instead of
-    // trusted from the caller because the failure mode is silent: a non-cursor processor never
-    // fires notifyGateComplete, so consulting the gate for one takes a claim nothing gives back,
-    // and a future second call site would strand it with no symptom until the TTL expires.
-    if ((fullRecalc instanceof RollupFullBatchRecalculator) == false) {
+    // trusted from the caller because the failure mode is silent: a processor that never fires
+    // notifyGateComplete takes a claim nothing gives back, and a future second call site would
+    // strand it with no symptom until the TTL expires.
+    // RollupParentResetProcessor has to be excluded by name: it EXTENDS RollupFullBatchRecalculator
+    // so it passes the type test, but it fully overrides runCalc without calling super, so neither
+    // the bail-out release nor a finalizer ever runs for it. Today buildFullRecalcRollup returns it
+    // above the gate block, which is the only thing keeping it out — a positional accident, not a
+    // guarantee.
+    if ((fullRecalc instanceof RollupFullBatchRecalculator) == false || fullRecalc instanceof RollupParentResetProcessor) {
       return fullRecalc;
     }
     // Arm the release BEFORE consulting the gate. A policy that claims its state and then throws
@@ -2446,6 +2451,14 @@ global without sharing virtual class Rollup implements RollupLogger.ToStringObje
       if (gateType != null && RollupFullRecalcGate.class.isAssignableFrom(gateType)) {
         return (RollupFullRecalcGate) gateType.newInstance();
       }
+      // say something. A typo that lands on a real-but-unrelated class resolves null here, and
+      // without this the operator gets a silently ungated org and not one line of diagnostics.
+      // The guard has to stay a guard rather than letting the cast throw into the catch below —
+      // newInstance() on an arbitrary misconfigured class would run its constructor first.
+      RollupLogger.Instance.log(
+        'full recalc gate "' + typeName + '" is not resolvable to a RollupFullRecalcGate, proceeding ungated',
+        System.LoggingLevel.WARN
+      );
     } catch (Exception ex) {
       // deliberately a catch-all: the only thing in here that can realistically throw is the
       // registered gate's own no-arg constructor, and an arbitrary implementation can throw
