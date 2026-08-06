@@ -17,6 +17,12 @@ public interface RollupFullRecalcGate {
   /**
    * @description Fired once when a proceeded recalc terminally completes, on both the
    * success and catchable-failure paths, so a policy can release any state it claimed.
+   *
+   * The framework arms this release before it consults `beforeEnqueue`, so a gate that claims
+   * state and then throws is still released. It cannot fire, however, if the transaction dies
+   * between the gate consult and the enqueue (an uncaught exception, a governor limit). An
+   * implementation that claims state MUST therefore carry its own expiry — a TTL on the claim is
+   * the only backstop for that window, and a policy without one can strand a claim forever.
    * @param context the same context captured at `beforeEnqueue` for this recalc
    */
   void afterComplete(RollupFullRecalcContext context);

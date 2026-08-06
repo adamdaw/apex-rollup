@@ -1,5 +1,12 @@
+// ExcessivePublicCount is ours, not upstream's: upstream sits at 19 of the 20 limit, and this fork's
+// setCustomEvaluator (needed so full-recalc bystander re-inclusion honours a caller-supplied
+// Evaluator) is the 20th. It has to be public — RollupAsyncProcessor is not a subclass, and Apex has
+// no package-private. The alternatives were changing setEvaluator's signature, which would rewrite
+// ~35 upstream test call sites, or threading the value through the virtual Factory.getCalculator and
+// every calculator subclass constructor. Both are far more divergence than a count threshold is
+// worth on a fork whose value is being a near-fast-forward of upstream.
 @SuppressWarnings(
-  'PMD.AvoidBooleanMethodParameters,PMD.EmptyStatementBlock,PMD.ExcessiveClassLength,PMD.ExcessiveParameterList,PMD.NcssTypeCount,PMD.TooManyFields'
+  'PMD.AvoidBooleanMethodParameters,PMD.EmptyStatementBlock,PMD.ExcessiveClassLength,PMD.ExcessiveParameterList,PMD.ExcessivePublicCount,PMD.NcssTypeCount,PMD.TooManyFields'
 )
 public without sharing abstract class RollupCalculator {
   private Boolean isCDCUpdate = false;

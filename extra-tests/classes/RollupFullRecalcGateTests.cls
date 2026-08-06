@@ -11,6 +11,7 @@ public class RollupFullRecalcGateTests {
   // Apex forbids static fields on inner classes, so the stub-gate counters live here.
   static Integer beforeEnqueueCount = 0;
   static Integer afterCompleteCount = 0;
+  static Integer claimCount = 0;
   static RollupFullRecalcContext capturedContext;
   static RollupFullRecalcContext capturedCompleteContext;
 
@@ -48,6 +49,17 @@ public class RollupFullRecalcGateTests {
     }
     public void afterComplete(RollupFullRecalcContext context) {
       throw new IllegalArgumentException('gate blew up on afterComplete');
+    }
+  }
+
+  // Models the dangerous real-world shape: the policy claims its lock and THEN fails.
+  public class ClaimThenThrowGate implements RollupFullRecalcGate {
+    public RollupFullRecalcContext.Decision beforeEnqueue(RollupFullRecalcContext context) {
+      claimCount++;
+      throw new IllegalArgumentException('gate claimed its lock, then blew up');
+    }
+    public void afterComplete(RollupFullRecalcContext context) {
+      afterCompleteCount++;
     }
   }
 
@@ -140,7 +152,9 @@ public class RollupFullRecalcGateTests {
 
   static void registerGate(String gateClassName) {
     RollupPlugin.pluginMocks = new List<RollupPlugin__mdt>{ new RollupPlugin__mdt(DeveloperName = Rollup.FULL_RECALC_GATE_NAME) };
-    RollupPlugin.parameterMock = new RollupPluginParameter__mdt(Value__c = gateClassName);
+    // DeveloperName matters: resolution now matches the parameter by name within the parameters
+    // scoped to the gate plugin, so an unnamed parameter no longer activates the gate.
+    RollupPlugin.parameterMock = new RollupPluginParameter__mdt(DeveloperName = Rollup.FULL_RECALC_GATE_PARAM_NAME, Value__c = gateClassName);
   }
 
   static List<Rollup__mdt> concatMetas() {
@@ -182,10 +196,6 @@ public class RollupFullRecalcGateTests {
     return new RollupParentResetProcessor(new List<Rollup__mdt>(), null, '', new Set<String>(), Rollup.InvocationPoint.FROM_APEX);
   }
 
-  static RollupFullRecalcProcessor deferredProcessor() {
-    return new RollupDeferredFullRecalcProcessor(new List<Rollup__mdt>(), RollupChild__c.SObjectType, '', new Set<String>(), Rollup.InvocationPoint.FROM_APEX, null);
-  }
-
   // A real cursor-consumer processor, built the way the framework builds it.
   static RollupFullBatchRecalculator buildBatchRecalc() {
     return new RollupFullBatchRecalculator(
@@ -198,17 +208,25 @@ public class RollupFullRecalcGateTests {
     );
   }
 
-  // Fake retriever injected via the @TestVisible seam to control the paging vs terminal branch.
-  public class FakeRetriever implements RollupFullBatchRecalculator.CalcItemRetriever {
-    private final Boolean keepPaging;
-    public FakeRetriever(Boolean keepPaging) {
-      this.keepPaging = keepPaging;
-    }
+  // Fake retrievers injected via the @TestVisible seam to choose the paging vs terminal branch.
+  // Two intent-named types rather than one taking a boolean, so a call site reads as the branch it
+  // forces — which is what every `new TerminalRetriever() // force the terminal branch` comment was
+  // compensating for.
+  public class PagingRetriever implements RollupFullBatchRecalculator.CalcItemRetriever {
     public List<SObject> fetch() {
       return new List<SObject>();
     }
     public Boolean shouldContinue() {
-      return this.keepPaging;
+      return true;
+    }
+  }
+
+  public class TerminalRetriever implements RollupFullBatchRecalculator.CalcItemRetriever {
+    public List<SObject> fetch() {
+      return new List<SObject>();
+    }
+    public Boolean shouldContinue() {
+      return false;
     }
   }
 
@@ -216,7 +234,14 @@ public class RollupFullRecalcGateTests {
   // batch (which would trip aer's cursor/JSON simulator bug); the terminal branch is untouched.
   public class NoEnqueueBatchRecalc extends RollupFullBatchRecalculator {
     public NoEnqueueBatchRecalc() {
-      super('SELECT Id, Name, RollupParent__c FROM RollupChild__c', Rollup.InvocationPoint.FROM_APEX, concatMetas(), RollupChild__c.SObjectType, new Set<String>(), null);
+      super(
+        'SELECT Id, Name, RollupParent__c FROM RollupChild__c',
+        Rollup.InvocationPoint.FROM_APEX,
+        concatMetas(),
+        RollupChild__c.SObjectType,
+        new Set<String>(),
+        null
+      );
     }
     protected override String startAsyncWork() {
       return this.getNoProcessId();
@@ -244,7 +269,7 @@ public class RollupFullRecalcGateTests {
     Assert.areEqual(1, Rollup.CACHED_FULL_RECALCS.size(), 'exactly one full recalc processor should be cached');
     RollupFullRecalcProcessor cached = Rollup.CACHED_FULL_RECALCS.get(0);
     Assert.isTrue(cached instanceof RollupFullBatchRecalculator, 'no gate => the cursor batch recalculator is returned unchanged');
-    Assert.isFalse(cached instanceof Rollup.RollupSuppressedFullRecalc, 'no gate must never substitute a suppressed processor');
+    Assert.isFalse(cached instanceof RollupSuppressedFullRecalc, 'no gate must never substitute a suppressed processor');
   }
 
   // ---- F1a (real path): SUPPRESS substitutes the built cursor processor via performBulkFullRecalc ----
@@ -259,7 +284,7 @@ public class RollupFullRecalcGateTests {
     // read the substitution synchronously, before any async logging runs at stopTest
     Assert.areEqual(1, Rollup.CACHED_FULL_RECALCS.size(), 'exactly one full recalc processor should be cached');
     RollupFullRecalcProcessor cached = Rollup.CACHED_FULL_RECALCS.get(0);
-    Assert.isTrue(cached instanceof Rollup.RollupSuppressedFullRecalc, 'SUPPRESS must substitute the built cursor processor on the real entry path');
+    Assert.isTrue(cached instanceof RollupSuppressedFullRecalc, 'SUPPRESS must substitute the built cursor processor on the real entry path');
     Assert.isFalse(cached instanceof RollupFullBatchRecalculator, 'the substitute must not be the cursor batch recalculator');
     Test.stopTest();
 
@@ -279,7 +304,7 @@ public class RollupFullRecalcGateTests {
     Assert.areEqual(1, Rollup.CACHED_FULL_RECALCS.size(), 'exactly one full recalc processor should be cached');
     RollupFullRecalcProcessor cached = Rollup.CACHED_FULL_RECALCS.get(0);
     Assert.isTrue(cached instanceof RollupFullBatchRecalculator, 'PROCEED must leave the cursor batch recalculator in place');
-    Assert.isFalse(cached instanceof Rollup.RollupSuppressedFullRecalc, 'PROCEED must not substitute a suppressed processor');
+    Assert.isFalse(cached instanceof RollupSuppressedFullRecalc, 'PROCEED must not substitute a suppressed processor');
     Assert.areEqual(1, beforeEnqueueCount, 'the gate must be consulted exactly once on the real entry path');
     Test.stopTest();
   }
@@ -324,10 +349,7 @@ public class RollupFullRecalcGateTests {
     finalizer.execute(new SuccessContext());
     Test.stopTest();
 
-    Assert.isFalse(
-      finalizer.handleUnhandledExceptionCalled,
-      'handleUnhandledException must fire only on the exception branch, never on success'
-    );
+    Assert.isFalse(finalizer.handleUnhandledExceptionCalled, 'handleUnhandledException must fire only on the exception branch, never on success');
   }
 
   // ---- F7 (real path): a resolvable-but-non-assignable class fails open, no ClassCastException ----
@@ -343,7 +365,7 @@ public class RollupFullRecalcGateTests {
     Assert.areEqual(1, Rollup.CACHED_FULL_RECALCS.size(), 'exactly one full recalc processor should be cached');
     RollupFullRecalcProcessor cached = Rollup.CACHED_FULL_RECALCS.get(0);
     Assert.isTrue(cached instanceof RollupFullBatchRecalculator, 'a non-assignable gate class must resolve null and proceed unchanged');
-    Assert.isFalse(cached instanceof Rollup.RollupSuppressedFullRecalc, 'a non-assignable gate class must never substitute a processor');
+    Assert.isFalse(cached instanceof RollupSuppressedFullRecalc, 'a non-assignable gate class must never substitute a processor');
     Test.stopTest();
   }
 
@@ -359,7 +381,7 @@ public class RollupFullRecalcGateTests {
     Assert.areEqual(1, Rollup.CACHED_FULL_RECALCS.size(), 'exactly one full recalc processor should be cached');
     RollupFullRecalcProcessor cached = Rollup.CACHED_FULL_RECALCS.get(0);
     Assert.isTrue(cached instanceof RollupFullBatchRecalculator, 'a gate whose constructor throws must resolve null and proceed unchanged');
-    Assert.isFalse(cached instanceof Rollup.RollupSuppressedFullRecalc, 'a throwing-constructor gate must never substitute a processor');
+    Assert.isFalse(cached instanceof RollupSuppressedFullRecalc, 'a throwing-constructor gate must never substitute a processor');
     Test.stopTest();
   }
 
@@ -375,7 +397,7 @@ public class RollupFullRecalcGateTests {
     Assert.areEqual(1, Rollup.CACHED_FULL_RECALCS.size(), 'exactly one full recalc processor should be cached');
     RollupFullRecalcProcessor cached = Rollup.CACHED_FULL_RECALCS.get(0);
     Assert.isTrue(cached instanceof RollupFullBatchRecalculator, 'a gate whose beforeEnqueue throws must be contained and proceed unchanged');
-    Assert.isFalse(cached instanceof Rollup.RollupSuppressedFullRecalc, 'a throwing beforeEnqueue must never substitute a processor');
+    Assert.isFalse(cached instanceof RollupSuppressedFullRecalc, 'a throwing beforeEnqueue must never substitute a processor');
     Test.stopTest();
   }
 
@@ -395,7 +417,7 @@ public class RollupFullRecalcGateTests {
     RollupFullRecalcProcessor cached = Rollup.CACHED_FULL_RECALCS.get(0);
     Assert.isTrue(cached instanceof RollupDeferredFullRecalcProcessor, 'a small set under a high batching threshold must produce the deferred processor');
     Assert.isFalse(cached instanceof RollupFullBatchRecalculator, 'the deferred processor is not the cursor consumer');
-    Assert.isFalse(cached instanceof Rollup.RollupSuppressedFullRecalc, 'the deferred path must never be substituted');
+    Assert.isFalse(cached instanceof RollupSuppressedFullRecalc, 'the deferred path must never be substituted');
     Assert.areEqual(0, beforeEnqueueCount, 'the gate must not be consulted off the cursor path (it pairs no afterComplete there)');
     Test.stopTest();
   }
@@ -415,11 +437,11 @@ public class RollupFullRecalcGateTests {
 
     Test.startTest();
     // non-terminal page: shouldContinue() == true => still paging => no release
-    batch.retriever = new FakeRetriever(true);
+    batch.retriever = new PagingRetriever();
     finalizer.execute(new SuccessContext());
     Assert.areEqual(0, afterCompleteCount, 'afterComplete must NOT fire while the cursor is still paging');
     // terminal page: shouldContinue() == false => finish() else-branch => release exactly once
-    batch.retriever = new FakeRetriever(false);
+    batch.retriever = new TerminalRetriever();
     finalizer.execute(new SuccessContext());
     Assert.areEqual(1, afterCompleteCount, 'afterComplete must fire exactly once at terminal completion, not per page');
     Test.stopTest();
@@ -455,7 +477,7 @@ public class RollupFullRecalcGateTests {
     Assert.areEqual(1, Rollup.CACHED_FULL_RECALCS.size(), 'exactly one full recalc processor should be cached');
     RollupFullRecalcProcessor cached = Rollup.CACHED_FULL_RECALCS.get(0);
     Assert.isTrue(cached instanceof RollupFullBatchRecalculator, 'a bogus, unresolvable gate class name must resolve null and proceed unchanged');
-    Assert.isFalse(cached instanceof Rollup.RollupSuppressedFullRecalc, 'a bogus gate class name must never substitute a processor');
+    Assert.isFalse(cached instanceof RollupSuppressedFullRecalc, 'a bogus gate class name must never substitute a processor');
     Test.stopTest();
   }
 
@@ -519,12 +541,12 @@ public class RollupFullRecalcGateTests {
     RollupFullRecalcProcessor original = stubProcessor();
 
     Test.startTest();
-    RollupFullRecalcProcessor substitute = Rollup.applyFullRecalcGate(original, buildContext());
+    RollupFullRecalcProcessor substitute = Rollup.applyFullRecalcGate(original, new SuppressAndCountCompleteGate(), buildContext());
     // the substitute carries no gate, so a completion notification must be a no-op
     substitute.notifyGateComplete();
     Test.stopTest();
 
-    Assert.isTrue(substitute instanceof Rollup.RollupSuppressedFullRecalc, 'precondition: the gate suppressed and substituted');
+    Assert.isTrue(substitute instanceof RollupSuppressedFullRecalc, 'precondition: the gate suppressed and substituted');
     Assert.areEqual(0, afterCompleteCount, 'the suppressed substitute must never fire afterComplete — the winner owns the release');
   }
 
@@ -560,7 +582,7 @@ public class RollupFullRecalcGateTests {
     Rollup.performBulkFullRecalc(grandparentMetas(), Rollup.InvocationPoint.FROM_FULL_RECALC_APEX.name());
     // pull the batch armed by the REAL applyFullRecalcGate (no manual setFullRecalcGate)
     RollupFullBatchRecalculator batch = (RollupFullBatchRecalculator) Rollup.CACHED_FULL_RECALCS.get(0);
-    batch.retriever = new FakeRetriever(false); // force the terminal branch
+    batch.retriever = new TerminalRetriever();
     batch.getFinalizer().execute(new SuccessContext());
     Assert.areEqual(1, afterCompleteCount, 'the real build path must arm the release; terminal success fires afterComplete once');
     // F2(c): the context released to afterComplete is the SAME one delivered to beforeEnqueue (same recalc/key)
@@ -579,7 +601,7 @@ public class RollupFullRecalcGateTests {
     Test.startTest();
     Rollup.performBulkFullRecalc(grandparentMetas(), Rollup.InvocationPoint.FROM_FULL_RECALC_APEX.name());
     RollupFullBatchRecalculator batch = (RollupFullBatchRecalculator) Rollup.CACHED_FULL_RECALCS.get(0);
-    batch.retriever = new FakeRetriever(false);
+    batch.retriever = new TerminalRetriever();
     batch.getFinalizer().execute(new UnhandledContext());
     Assert.areEqual(1, afterCompleteCount, 'the real build path must arm the release; the failure branch fires afterComplete once');
     Test.stopTest();
@@ -598,7 +620,7 @@ public class RollupFullRecalcGateTests {
     Test.startTest();
     Rollup.performBulkFullRecalc(grandparentMetas(), Rollup.InvocationPoint.FROM_FULL_RECALC_APEX.name());
     RollupFullBatchRecalculator batch = (RollupFullBatchRecalculator) Rollup.CACHED_FULL_RECALCS.get(0);
-    batch.retriever = new FakeRetriever(false); // force the terminal branch
+    batch.retriever = new TerminalRetriever();
     Rollup.DML = new ThrowingUpdater(); // finish()'s parent-reset doUpdate throws
     Boolean finishThrew = false;
     try {
@@ -645,7 +667,7 @@ public class RollupFullRecalcGateTests {
     Test.startTest();
     Rollup.performBulkFullRecalc(grandparentMetas(), Rollup.InvocationPoint.FROM_FULL_RECALC_APEX.name());
     RollupFullBatchRecalculator batch = (RollupFullBatchRecalculator) Rollup.CACHED_FULL_RECALCS.get(0);
-    batch.retriever = new FakeRetriever(false); // force the terminal branch
+    batch.retriever = new TerminalRetriever();
     batch.getFinalizer().execute(new SuccessContext());
     Assert.isNotNull(capturedContext, 'beforeEnqueue must have captured the context');
     Assert.areEqual(
@@ -688,7 +710,11 @@ public class RollupFullRecalcGateTests {
 
     Test.startTest();
     Assert.areNotEqual(groupOne.getRecalcKey(), groupTwo.getRecalcKey(), 'different calc-item type + group must derive different keys');
-    Assert.areNotEqual(groupOne.getRecalcKey(), groupThree.getRecalcKey(), 'a different DeveloperName alone must derive a different key (a constant key would collide)');
+    Assert.areNotEqual(
+      groupOne.getRecalcKey(),
+      groupThree.getRecalcKey(),
+      'a different DeveloperName alone must derive a different key (a constant key would collide)'
+    );
     Test.stopTest();
   }
 
@@ -696,46 +722,28 @@ public class RollupFullRecalcGateTests {
   @IsTest
   static void gateConsultedProceedReturnsOriginalProcessor() {
     beforeEnqueueCount = 0;
-    registerGate(ProceedGate.class.getName());
     RollupFullRecalcProcessor original = stubProcessor();
 
     Test.startTest();
-    RollupFullRecalcProcessor result = Rollup.applyFullRecalcGate(original, buildContext());
+    RollupFullRecalcProcessor result = Rollup.applyFullRecalcGate(original, new ProceedGate(), buildContext());
     Test.stopTest();
 
     Assert.areEqual(1, beforeEnqueueCount, 'beforeEnqueue must be consulted exactly once before returning the processor');
     Assert.isTrue(result == original, 'PROCEED must return the same processor the framework built');
-    Assert.isFalse(result instanceof Rollup.RollupSuppressedFullRecalc, 'PROCEED must not substitute a suppressed processor');
-  }
-
-  // ---- AC: only the cursor path is consulted (deferred path pairs no afterComplete) ----
-  @IsTest
-  static void deferredPathIsNotConsulted() {
-    beforeEnqueueCount = 0;
-    registerGate(SuppressGate.class.getName());
-    RollupFullRecalcProcessor deferred = deferredProcessor();
-
-    Test.startTest();
-    RollupFullRecalcProcessor result = Rollup.applyFullRecalcGate(deferred, buildContext());
-    Test.stopTest();
-
-    Assert.areEqual(0, beforeEnqueueCount, 'the deferred/small-set path must not consult the gate — it fires no paired afterComplete');
-    Assert.isTrue(result == deferred, 'a non-cursor processor must proceed unchanged');
-    Assert.isFalse(result instanceof Rollup.RollupSuppressedFullRecalc, 'the deferred path must never be substituted');
+    Assert.isFalse(result instanceof RollupSuppressedFullRecalc, 'PROCEED must not substitute a suppressed processor');
   }
 
   // ---- AC3: SUPPRESS returns a substitute, not the cursor processor ----
   @IsTest
   static void suppressReturnsSubstituteNotBatchRecalculator() {
-    registerGate(SuppressGate.class.getName());
     RollupFullRecalcProcessor original = stubProcessor();
 
     Test.startTest();
-    RollupFullRecalcProcessor result = Rollup.applyFullRecalcGate(original, buildContext());
+    RollupFullRecalcProcessor result = Rollup.applyFullRecalcGate(original, new SuppressGate(), buildContext());
     String runResult = result.runCalc();
     Test.stopTest();
 
-    Assert.isTrue(result instanceof Rollup.RollupSuppressedFullRecalc, 'SUPPRESS must return the no-op substitute');
+    Assert.isTrue(result instanceof RollupSuppressedFullRecalc, 'SUPPRESS must return the no-op substitute');
     Assert.isFalse(result instanceof RollupFullBatchRecalculator, 'the substitute must not be a RollupFullBatchRecalculator');
     Assert.isFalse(result == original, 'the substitute must replace the original processor');
     Assert.areEqual(result.getNoProcessId(), runResult, 'the substitute performs no async work');
@@ -778,21 +786,19 @@ public class RollupFullRecalcGateTests {
   @IsTest
   static void unresolvableGateFailsOpen() {
     registerGate('Definitely.Not.A.Real.Class');
-    RollupFullRecalcProcessor original = stubProcessor();
 
     Test.startTest();
     RollupFullRecalcGate gate = Rollup.resolveFullRecalcGate();
-    RollupFullRecalcProcessor result = Rollup.applyFullRecalcGate(original, buildContext());
     Test.stopTest();
 
+    // resolution returning null is the whole fail-open mechanism: buildFullRecalcRollup returns the
+    // processor untouched without ever building a context (see bogusGateClassNameFailsOpenOnRealPath)
     Assert.isNull(gate, 'a gate naming an uninstantiable class must resolve null');
-    Assert.isTrue(result == original, 'an unresolvable gate must proceed exactly as if no gate were configured');
   }
 
   // ---- AC7: a throwing gate fails open (both call sites) ----
   @IsTest
   static void throwingGateFailsOpen() {
-    registerGate(ThrowingGate.class.getName());
     RollupFullRecalcProcessor original = stubProcessor();
     RollupFullRecalcContext context = buildContext();
 
@@ -800,7 +806,7 @@ public class RollupFullRecalcGateTests {
     releaseProcessor.setFullRecalcGate(new ThrowingGate(), context);
 
     Test.startTest();
-    RollupFullRecalcProcessor result = Rollup.applyFullRecalcGate(original, context);
+    RollupFullRecalcProcessor result = Rollup.applyFullRecalcGate(original, new ThrowingGate(), context);
     // a throwing afterComplete must also be contained
     releaseProcessor.notifyGateComplete();
     Test.stopTest();
@@ -811,14 +817,62 @@ public class RollupFullRecalcGateTests {
   // ---- AC8: dormant seam is inert (byte-for-byte parity with no gate) ----
   @IsTest
   static void dormantSeamIsInert() {
-    RollupFullRecalcProcessor original = stubProcessor();
-
     Test.startTest();
     RollupFullRecalcGate gate = Rollup.resolveFullRecalcGate();
-    RollupFullRecalcProcessor result = Rollup.applyFullRecalcGate(original, buildContext());
     Test.stopTest();
 
     Assert.isNull(gate, 'with no plugin record the gate resolves null');
-    Assert.isTrue(result == original, 'the dormant seam returns the identical processor — no behaviour differs from baseline');
+  }
+
+  // ---- REVIEW R2-P2: a gate that claims state then throws must still get its release ----
+  @IsTest
+  static void claimThenThrowStillReleasesTheClaim() {
+    claimCount = 0;
+    afterCompleteCount = 0;
+    RollupFullRecalcProcessor original = stubProcessor();
+
+    Test.startTest();
+    RollupFullRecalcProcessor result = Rollup.applyFullRecalcGate(original, new ClaimThenThrowGate(), buildContext());
+    // whatever terminal path runs, the finalizer calls this
+    result.notifyGateComplete();
+    Test.stopTest();
+
+    Assert.areEqual(1, claimCount, 'precondition: the gate claimed before it threw');
+    Assert.isTrue(result == original, 'a throwing beforeEnqueue must proceed unchanged');
+    Assert.areEqual(
+      1,
+      afterCompleteCount,
+      'the release must be armed BEFORE beforeEnqueue is consulted, or a claim taken by a gate that then throws strands until TTL'
+    );
+  }
+
+  // ---- REVIEW R2-P3: the gate class name must come from a parameter scoped to the gate plugin ----
+  @IsTest
+  static void parameterAttachedToAnotherPluginDoesNotActivateTheGate() {
+    RollupPlugin.pluginMocks = new List<RollupPlugin__mdt>{ new RollupPlugin__mdt(DeveloperName = Rollup.FULL_RECALC_GATE_NAME) };
+    RollupPlugin.parameterMock = new RollupPluginParameter__mdt(
+      DeveloperName = Rollup.FULL_RECALC_GATE_PARAM_NAME,
+      Value__c = ProceedGate.class.getName(),
+      RollupPlugin__c = RollupTestUtils.createId(RollupPlugin__mdt.SObjectType)
+    );
+
+    Test.startTest();
+    RollupFullRecalcGate gate = Rollup.resolveFullRecalcGate();
+    Test.stopTest();
+
+    Assert.isNull(gate, 'a FullRecalcGateClass parameter attached to a DIFFERENT plugin must not activate this gate');
+  }
+
+  // ---- REVIEW R2-P3: a parameter under the right plugin but the wrong name is ignored ----
+  @IsTest
+  static void parameterWithAnotherNameDoesNotActivateTheGate() {
+    RollupPlugin.pluginMocks = new List<RollupPlugin__mdt>{ new RollupPlugin__mdt(DeveloperName = Rollup.FULL_RECALC_GATE_NAME) };
+    RollupPlugin.parameterMock = new RollupPluginParameter__mdt(DeveloperName = 'SomeOtherParameter', Value__c = ProceedGate.class.getName());
+
+    Test.startTest();
+    RollupFullRecalcGate gate = Rollup.resolveFullRecalcGate();
+    Test.stopTest();
+
+    Assert.isNull(gate, 'only the FullRecalcGateClass parameter may name the gate implementation');
   }
 }

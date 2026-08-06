@@ -65,7 +65,7 @@ global abstract without sharing class RollupFullRecalcProcessor extends RollupAs
     try {
       this.fullRecalcGate.afterComplete(this.fullRecalcContext);
     } catch (Exception ex) {
-      RollupLogger.Instance.log('full recalc gate afterComplete threw, continuing', System.LoggingLevel.WARN);
+      RollupLogger.Instance.log('full recalc gate afterComplete threw ' + ex.getTypeName() + ', continuing', ex, System.LoggingLevel.WARN);
     }
   }
 
