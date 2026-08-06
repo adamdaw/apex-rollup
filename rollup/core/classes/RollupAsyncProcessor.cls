@@ -30,6 +30,13 @@ global virtual without sharing class RollupAsyncProcessor extends Rollup impleme
   // performWork; a unit test driving finish(BatchableContext) directly supplies that reference.
   @TestVisible
   protected RollupFullRecalcProcessor fullRecalcProcessor;
+  // Set on the inner rollups a full recalc delegates to (RollupFullRecalcProcessor
+  // .getDelegatedFullRecalcRollups). They point at the conductor but are NOT it, and when one goes
+  // async as its own Batchable it carries a serialized COPY of the conductor — its own
+  // hasNotifiedGate reads false, so releasing the gate from its finish() would fire afterComplete
+  // while the real conductor is still paging. Only the conductor itself may release.
+  @TestVisible
+  protected Boolean isDelegatedInnerRollup = false;
   protected final SObjectType calcItemType;
   protected final Set<String> recordIds;
   protected RollupFinalizer finalizer;
@@ -255,8 +262,13 @@ global virtual without sharing class RollupAsyncProcessor extends Rollup impleme
       } finally {
         // container-agnostic release: the Batchable failsafe completion path releases the gate too
         // (the cursor-Queueable finalizer path is the other; hasNotifiedGate keeps this idempotent),
-        // even if finish() throws — else the Slice-2 lock would strand.
-        this.fullRecalcProcessor?.notifyGateComplete();
+        // even if finish() throws — else the lock would strand.
+        // Delegated inner rollups are excluded: see isDelegatedInnerRollup. They finish while the
+        // conductor is still paging, and an early release lets a duplicate in — the exact thing a
+        // suppression policy exists to prevent, and one a TTL cannot backstop.
+        if (this.isDelegatedInnerRollup == false) {
+          this.fullRecalcProcessor?.notifyGateComplete();
+        }
       }
     }
     context = context ?? new AdditionalContext(this.getNoProcessId());

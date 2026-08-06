@@ -2463,8 +2463,9 @@ global without sharing virtual class Rollup implements RollupLogger.ToStringObje
   /**
    * @description Reads the gate's implementing class name from the parameter registered against
    * the gate plugin record. Scoped via `getMatchingParameters` so a `FullRecalcGateClass`
-   * parameter attached to some OTHER plugin cannot activate this gate; parameters left unattached
-   * still match, which is the shipped convention the other plugins rely on.
+   * parameter attached to some OTHER plugin cannot activate this gate. Every shipped parameter
+   * record sets `RollupPlugin__c`, so that is the shape to register; an unattached parameter also
+   * matches, because `getMatchingParameters` only drops one whose plugin is set and differs.
    * @param plugin the plugin accessor
    * @param gatePluginId the id of the gate's `RollupPlugin__mdt` record
    * @return the configured class name, or null when the parameter is absent or blank

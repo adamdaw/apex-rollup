@@ -23,7 +23,7 @@ CXS-300) **without forking rollup behavior**:
 - `extra-tests/classes/RollupFullRecalcGateTests.cls` — covers the seam in isolation (dormant-is-inert,
   fail-open paths, runToken stability).
 
-Three ordering rules hold the seam together; breaking any of them reintroduces a bug we already shipped once:
+Six rules hold the seam together; breaking any of them reintroduces a bug we already shipped once:
 
 1. **Resolve the gate before building the context.** `RollupFullRecalcContext`'s constructor clones the
    metadata list, copies every in-scope parent id, derives the key and mints a token via
@@ -35,6 +35,21 @@ Three ordering rules hold the seam together; breaking any of them reintroduces a
 3. **Don't consult the gate for a recalc that will never enqueue.** A processor that is still `isNoOp`
    with `recordCount == 0` is dropped by `addRollup`, so no finalizer would ever release a claim taken
    for it.
+4. **Only the cursor path may be gated, checked at the consult site itself.** A non-cursor processor
+   never fires `notifyGateComplete`, so consulting it takes a claim nothing gives back. The caller
+   filters, and `applyFullRecalcGate` re-checks — a comment is not a guard, and the failure mode is a
+   silently stranded lock.
+5. **The suppression substitute must pass on the conductor role.** `performBulkFullRecalc` promotes
+   `processors[0]` and hangs the other calc-item types off its `rollups`. A substitute that lands
+   there and returns early cancels rollup groups the gate never suppressed — silently, no job and no
+   log. `RollupSuppressedFullRecalc.runCalc` promotes the first live processor instead, mirroring
+   `RollupParentResetProcessor.arrangeCabooses`.
+6. **Only the conductor releases.** `hasNotifiedGate` is a per-instance latch: it rides the cursor
+   chain (each page is the serialized previous instance) but not a sibling copy. A delegated inner
+   rollup carries its own copy of the conductor, so `RollupAsyncProcessor.finish` skips the release
+   when `isDelegatedInnerRollup` — otherwise `afterComplete` fires while the conductor is still
+   paging, and an early release lets in the duplicate the policy exists to stop. A TTL cannot
+   backstop that direction.
 
 **Zero behavior change unless a gate class is registered.** With no `RollupPlugin__mdt` registration the
 seam is inert, so it is safe to carry on top of any upstream release.
@@ -56,8 +71,10 @@ fork's `setCustomEvaluator` (needed so full-recalc bystander re-inclusion honour
 `Evaluator`) is the 20th. It has to be public — `RollupAsyncProcessor` is not a subclass and Apex
 has no package-private. The alternatives were changing `setEvaluator`'s signature, rewriting ~35
 upstream test call sites, or threading the value through the virtual `Factory.getCalculator` and
-every calculator subclass constructor. Both are far more divergence than a count threshold is worth
-on a fork whose value is being a near-fast-forward of upstream. The suppression is the fork's, not
+every calculator subclass constructor. An overload is not available: `setEvaluator` and
+`setCustomEvaluator` take the same parameter type. Each alternative is far more divergence than a
+count threshold is worth on a fork whose value is being a near-fast-forward of upstream. The
+suppression is the fork's, not
 upstream's: scanning the upstream file in isolation returns zero violations. If a bump makes the
 suppression unnecessary, drop it rather than carrying it.
 
@@ -74,7 +91,7 @@ Resolve conflicts (historically only in `extra-tests/testSuites/ApexRollupTestSu
 when upstream reorganizes tests). Then **verify with aer** before tagging:
 
 ```
-aer test rollup extra-tests --skip-errors -f RollupFullRecalcGateTests   # seam: expect 34/34
+aer test rollup extra-tests --skip-errors -f RollupFullRecalcGateTests   # seam: expect 37/37
 aer test rollup extra-tests --skip-errors -f ZZ                          # carries: expect 19/19
 ```
 
@@ -82,4 +99,8 @@ Tag the result `v<upstream>-vacatia.<n>` and vendor it into the Vacatia Salesfor
 `scripts/vendor/vendor-apex-rollup.sh` (bump `ROLLUP_TAG`). A handful of `RollupCalculatorTests` /
 `RollupFullRecalcTests` fail under aer on a **clean** upstream checkout too — they are aer-vs-org
 environment gaps, not regressions; confirm the same failures exist on the clean upstream tag before
-worrying about them.
+worrying about them. The fastest way to confirm is a throwaway worktree on the base
+(`git worktree add /tmp/wt <base-tag>`) and the same `aer` filter — as of v1.7.44 that is 2 in
+`RollupFullRecalcTests` (`shouldBatchForFullRecalcWhenOverLimits`,
+`addsCabooseForMultipleFullRecalcsToDifferentParents`) and 5 state-related ones in
+`RollupCalculatorTests`.

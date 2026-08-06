@@ -54,8 +54,13 @@ global abstract without sharing class RollupFullRecalcProcessor extends RollupAs
 
   /**
    * @description Notifies the gate that this recalc has terminally completed, exactly once
-   * per logical recalc (idempotent across cursor pages / re-entry). Fails open: a throwing
-   * `afterComplete` is contained so it never breaks the finalizer.
+   * per logical recalc. Fails open: a throwing `afterComplete` is contained so it never breaks
+   * the finalizer.
+   *
+   * `hasNotifiedGate` is a per-INSTANCE latch, which is what the cursor chain needs — each page's
+   * Queueable is the serialized previous instance, so the latch travels with it. It does not span
+   * a sibling COPY, so every release site must be one that only the owning processor reaches:
+   * the cursor finalizer, and `RollupAsyncProcessor.finish` guarded on `isDelegatedInnerRollup`.
    */
   public void notifyGateComplete() {
     if (this.fullRecalcGate == null || this.hasNotifiedGate) {
@@ -199,6 +204,7 @@ global abstract without sharing class RollupFullRecalcProcessor extends RollupAs
     }
     for (RollupAsyncProcessor innerRoll : processor.rollups) {
       innerRoll.fullRecalcProcessor = this;
+      innerRoll.isDelegatedInnerRollup = true;
       innerRoll.isFullRecalc = this.getShouldResetParentRecordsDuringRecalculation();
       innerRoll.calcItems = calcItems;
     }

@@ -1,4 +1,5 @@
-// ExcessivePublicCount is the fork's, not upstream's — see SEAM.md "public-count suppression".
+// ExcessivePublicCount is the fork's, not upstream's — see SEAM.md §3, "Analyzer suppressions the
+// fork owns".
 @SuppressWarnings(
   'PMD.AvoidBooleanMethodParameters,PMD.EmptyStatementBlock,PMD.ExcessiveClassLength,PMD.ExcessiveParameterList,PMD.ExcessivePublicCount,PMD.NcssTypeCount,PMD.TooManyFields'
 )

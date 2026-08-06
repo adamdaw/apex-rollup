@@ -17,6 +17,11 @@
  * The gate is not carried through to this substitute on purpose. A suppressed run claimed nothing
  * of its own — the state it collided with belongs to the run already in flight — so there is
  * nothing here to release.
+ *
+ * Suppression is scoped to THIS rollup group. It never cancels another calc-item type's recalc
+ * (see `runCalc`), and it does discard the suppressed group's pending parent-field resets along
+ * with the recalc that would have repopulated them — blanking parents without recomputing would
+ * be worse than leaving the in-flight winner's values in place.
  */
 public without sharing class RollupSuppressedFullRecalc extends RollupFullRecalcProcessor {
   /**
@@ -29,8 +34,24 @@ public without sharing class RollupSuppressedFullRecalc extends RollupFullRecalc
     this.isNoOp = true;
   }
 
+  /**
+   * @description Suppresses this recalc without cancelling anyone else's. `performBulkFullRecalc`
+   * promotes `processors[0]` to conductor and hangs the OTHER calc-item types' processors off its
+   * `rollups`, so a substitute that lands in first position is holding work the gate either
+   * proceeded or never saw. Returning early there would drop it silently — no job, no error, no
+   * log, just parent fields that stay stale. So hand the conductor role to the first live
+   * processor, mirroring `RollupParentResetProcessor.arrangeCabooses`, which exists for exactly
+   * this reason. With nothing in tow this is the plain no-op it looks like.
+   * @return the promoted conductor's process id, or the no-op id when nothing was in tow
+   */
   public override String runCalc() {
-    return this.getNoProcessId();
+    if (this.rollups.isEmpty()) {
+      return this.getNoProcessId();
+    }
+    RollupAsyncProcessor newConductor = this.rollups.remove(0);
+    newConductor.rollups.addAll(this.rollups);
+    this.rollups.clear();
+    return newConductor.runCalc();
   }
 
   protected override String startAsyncWork() {

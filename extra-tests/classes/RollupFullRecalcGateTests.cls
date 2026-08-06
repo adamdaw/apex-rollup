@@ -63,6 +63,19 @@ public class RollupFullRecalcGateTests {
     }
   }
 
+  // Suppresses whichever rollup group is consulted FIRST and proceeds for every one after it.
+  // Consult order is build order, so this deterministically makes the substitute processors[0] —
+  // the conductor slot in performBulkFullRecalc — without depending on map iteration order.
+  public class SuppressFirstThenProceedGate implements RollupFullRecalcGate {
+    public RollupFullRecalcContext.Decision beforeEnqueue(RollupFullRecalcContext context) {
+      beforeEnqueueCount++;
+      return beforeEnqueueCount == 1 ? RollupFullRecalcContext.Decision.SUPPRESS : RollupFullRecalcContext.Decision.PROCEED;
+    }
+    @SuppressWarnings('PMD.EmptyStatementBlock')
+    public void afterComplete(RollupFullRecalcContext context) {
+    }
+  }
+
   public class RecordingGate implements RollupFullRecalcGate {
     public RollupFullRecalcContext.Decision beforeEnqueue(RollupFullRecalcContext context) {
       capturedContext = context;
@@ -150,11 +163,47 @@ public class RollupFullRecalcGateTests {
 
   // ---- Helpers ----
 
+  // Registers the gate the way a real org would: the parameter ATTACHED to the plugin record.
+  // Every shipped RollupPluginParameter__mdt sets RollupPlugin__c, so a mock with a null plugin Id
+  // and an unattached parameter would slip through getMatchingParameters' tolerance branch and
+  // prove nothing about the scoping — the whole suite would pass with or without it.
   static void registerGate(String gateClassName) {
-    RollupPlugin.pluginMocks = new List<RollupPlugin__mdt>{ new RollupPlugin__mdt(DeveloperName = Rollup.FULL_RECALC_GATE_NAME) };
-    // DeveloperName matters: resolution now matches the parameter by name within the parameters
-    // scoped to the gate plugin, so an unnamed parameter no longer activates the gate.
-    RollupPlugin.parameterMock = new RollupPluginParameter__mdt(DeveloperName = Rollup.FULL_RECALC_GATE_PARAM_NAME, Value__c = gateClassName);
+    Id gatePluginId = RollupTestUtils.createId(RollupPlugin__mdt.SObjectType);
+    RollupPlugin.pluginMocks = new List<RollupPlugin__mdt>{ new RollupPlugin__mdt(Id = gatePluginId, DeveloperName = Rollup.FULL_RECALC_GATE_NAME) };
+    // DeveloperName matters too: resolution matches the parameter by name within the parameters
+    // scoped to the gate plugin, so a differently-named parameter no longer activates the gate.
+    RollupPlugin.parameterMock = new RollupPluginParameter__mdt(
+      DeveloperName = Rollup.FULL_RECALC_GATE_PARAM_NAME,
+      Value__c = gateClassName,
+      RollupPlugin__c = gatePluginId
+    );
+  }
+
+  // Two rollups on DIFFERENT calc-item types, so transformWrappedMetadataToFullRecalcRollups
+  // returns two processors and the conductor-promotion branch of performBulkFullRecalc is reached.
+  static List<Rollup__mdt> bulkMetasForTwoCalcItemTypes() {
+    return new List<Rollup__mdt>{
+      new Rollup__mdt(
+        DeveloperName = 'Contact_To_Account_Count',
+        CalcItem__c = 'Contact',
+        LookupObject__c = 'Account',
+        LookupFieldOnCalcItem__c = 'AccountId',
+        LookupFieldOnLookupObject__c = 'Id',
+        RollupFieldOnCalcItem__c = 'LastName',
+        RollupFieldOnLookupObject__c = 'NumberOfEmployees',
+        RollupOperation__c = 'COUNT'
+      ),
+      new Rollup__mdt(
+        DeveloperName = 'Opportunity_To_Account_Sum',
+        CalcItem__c = 'Opportunity',
+        LookupObject__c = 'Account',
+        LookupFieldOnCalcItem__c = 'AccountId',
+        LookupFieldOnLookupObject__c = 'Id',
+        RollupFieldOnCalcItem__c = 'Amount',
+        RollupFieldOnLookupObject__c = 'AnnualRevenue',
+        RollupOperation__c = 'SUM'
+      )
+    };
   }
 
   static List<Rollup__mdt> concatMetas() {
@@ -259,6 +308,9 @@ public class RollupFullRecalcGateTests {
   // ---- AC1: no gate registered leaves the processor choice unchanged ----
   @IsTest
   static void noGateRegisteredReturnsBatchRecalculatorUnchanged() {
+    // pinned to mocks only: otherwise this consults the host org's real policy inside a test
+    // transaction and goes red in exactly the org that registers the gate
+    RollupPlugin.onlyUseMockPlugins = true;
     Rollup.defaultControl = new RollupControl__mdt(IsRollupLoggingEnabled__c = true, MaxLookupRowsBeforeBatching__c = 0);
     insert as system new Contact(LastName = 'no gate full recalc');
 
@@ -536,8 +588,9 @@ public class RollupFullRecalcGateTests {
   @IsTest
   static void suppressedSubstituteStaysSilent() {
     afterCompleteCount = 0;
-    // a gate that both suppresses AND would count an afterComplete if the substitute wrongly released
-    registerGate(SuppressAndCountCompleteGate.class.getName());
+    // no registerGate: applyFullRecalcGate takes the gate instance directly and never reads the
+    // plugin registry. The gate below both suppresses AND would count an afterComplete if the
+    // substitute wrongly released.
     RollupFullRecalcProcessor original = buildBatchRecalc();
 
     Test.startTest();
@@ -565,6 +618,29 @@ public class RollupFullRecalcGateTests {
     Test.stopTest();
 
     Assert.areEqual(1, afterCompleteCount, 'the Batchable failsafe completion path must release the gate exactly once');
+  }
+
+  // ---- REVIEW R3-F2: a delegated inner rollup finishing must NOT release the conductor's gate ----
+  @IsTest
+  static void delegatedInnerRollupDoesNotReleaseTheGate() {
+    afterCompleteCount = 0;
+    RollupFullBatchRecalculator conductor = buildBatchRecalc();
+    conductor.setFullRecalcGate(new ProceedGate(), buildContext());
+    // mirror what RollupFullRecalcProcessor.getDelegatedFullRecalcRollups sets on each inner
+    // rollup: it points at the conductor and is flagged as a delegate. In production this object
+    // is a serialized copy whose own hasNotifiedGate is false, so the latch cannot stop it —
+    // the flag is what stops it.
+    RollupFullBatchRecalculator delegate = buildBatchRecalc();
+    delegate.setFullRecalcGate(new ProceedGate(), buildContext());
+    delegate.fullRecalcProcessor = conductor;
+    delegate.isDelegatedInnerRollup = true;
+
+    Test.startTest();
+    // the delegate's own Batchable completion, while the conductor is still paging
+    delegate.finish((Database.BatchableContext) null);
+    Test.stopTest();
+
+    Assert.areEqual(0, afterCompleteCount, 'a delegated inner rollup finishing must not release the conductor gate — an early release lets a duplicate in');
   }
 
   // ---- F1: the REAL performBulkFullRecalc build path arms the release (terminal success) ----
@@ -750,6 +826,45 @@ public class RollupFullRecalcGateTests {
     Assert.areEqual(0, Limits.getQueueableJobs(), 'the suppressed substitute enqueues no async work');
   }
 
+  // ---- REVIEW R3-F1: suppressing one rollup group must not cancel the others ----
+  @IsTest
+  static void suppressedConductorStillRunsTheOtherRollupGroups() {
+    beforeEnqueueCount = 0;
+    // MaxLookupRowsBeforeBatching__c = 0 forces the cursor path, which is the only gated one;
+    // ShouldRunAs__c left null keeps performBulkFullRecalc's conductor-promotion branch in play
+    Rollup.defaultControl = new RollupControl__mdt(IsRollupLoggingEnabled__c = true, MaxLookupRowsBeforeBatching__c = 0);
+    registerGate(SuppressFirstThenProceedGate.class.getName());
+
+    // two calc-item types, so performBulkFullRecalc promotes processors[0] to conductor and hangs
+    // the second group off its rollups. The gate suppresses whichever lands first.
+    Account parentAccount = [SELECT Id FROM Account WITH SYSTEM_MODE];
+    insert as system new Contact(LastName = 'gate bulk contact', AccountId = parentAccount.Id);
+    insert as system new Opportunity(
+      Name = 'gate bulk opp',
+      StageName = 'Prospecting',
+      CloseDate = System.today(),
+      AccountId = parentAccount.Id,
+      Amount = 1000
+    );
+
+    Test.startTest();
+    Rollup.performBulkFullRecalc(bulkMetasForTwoCalcItemTypes(), Rollup.InvocationPoint.FROM_FULL_RECALC_LWC.name());
+    Test.stopTest();
+
+    Assert.areEqual(2, beforeEnqueueCount, 'precondition: the gate saw both rollup groups');
+    // order-independent: exactly one group was suppressed, so exactly one parent must be rolled up.
+    // Before the fix the substitute short-circuited runCalc as conductor and NEITHER ran.
+    Account rolledUp = [SELECT AnnualRevenue, NumberOfEmployees FROM Account WHERE Id = :parentAccount.Id WITH SYSTEM_MODE];
+    Integer rolledUpParents = 0;
+    if (rolledUp.AnnualRevenue == 1000) {
+      rolledUpParents++;
+    }
+    if (rolledUp.NumberOfEmployees == 1) {
+      rolledUpParents++;
+    }
+    Assert.areEqual(1, rolledUpParents, 'the group the gate proceeded must still run when the suppressed one is promoted to conductor');
+  }
+
   // ---- REVIEW R2-F2: a non-cursor processor is never gated, even when handed straight in ----
   @IsTest
   static void nonCursorProcessorIsNotGated() {
@@ -839,9 +954,14 @@ public class RollupFullRecalcGateTests {
     Assert.isTrue(result == original, 'a gate whose beforeEnqueue throws must proceed unchanged (exception contained)');
   }
 
-  // ---- AC8: dormant seam is inert (byte-for-byte parity with no gate) ----
+  // ---- AC8: with nothing registered the seam resolves nothing (the whole fail-open mechanism) ----
   @IsTest
   static void dormantSeamIsInert() {
+    // pinned to mocks only, so this still asserts "nothing registered" in the org that DOES
+    // register the gate. Parity of the built processor is covered on the real path by
+    // noGateRegisteredReturnsBatchRecalculatorUnchanged.
+    RollupPlugin.onlyUseMockPlugins = true;
+
     Test.startTest();
     RollupFullRecalcGate gate = Rollup.resolveFullRecalcGate();
     Test.stopTest();
@@ -874,7 +994,11 @@ public class RollupFullRecalcGateTests {
   // ---- REVIEW R2-P3: the gate class name must come from a parameter scoped to the gate plugin ----
   @IsTest
   static void parameterAttachedToAnotherPluginDoesNotActivateTheGate() {
-    RollupPlugin.pluginMocks = new List<RollupPlugin__mdt>{ new RollupPlugin__mdt(DeveloperName = Rollup.FULL_RECALC_GATE_NAME) };
+    // the plugin carries a real Id and the parameter names a DIFFERENT one, which is the only shape
+    // that actually discriminates: with a null plugin Id the scoping filter cannot fire at all
+    RollupPlugin.pluginMocks = new List<RollupPlugin__mdt>{
+      new RollupPlugin__mdt(Id = RollupTestUtils.createId(RollupPlugin__mdt.SObjectType), DeveloperName = Rollup.FULL_RECALC_GATE_NAME)
+    };
     RollupPlugin.parameterMock = new RollupPluginParameter__mdt(
       DeveloperName = Rollup.FULL_RECALC_GATE_PARAM_NAME,
       Value__c = ProceedGate.class.getName(),
@@ -886,6 +1010,24 @@ public class RollupFullRecalcGateTests {
     Test.stopTest();
 
     Assert.isNull(gate, 'a FullRecalcGateClass parameter attached to a DIFFERENT plugin must not activate this gate');
+  }
+
+  // ---- REVIEW R3-F3: an UNATTACHED parameter still activates — documenting the real behaviour ----
+  @IsTest
+  static void unattachedParameterStillActivatesTheGate() {
+    RollupPlugin.pluginMocks = new List<RollupPlugin__mdt>{
+      new RollupPlugin__mdt(Id = RollupTestUtils.createId(RollupPlugin__mdt.SObjectType), DeveloperName = Rollup.FULL_RECALC_GATE_NAME)
+    };
+    // RollupPlugin__c left null. getMatchingParameters only drops a parameter whose plugin is set
+    // AND differs, so this one survives. No shipped record has this shape — it is tolerance, not
+    // convention — but it is the framework's behaviour and the seam inherits it.
+    RollupPlugin.parameterMock = new RollupPluginParameter__mdt(DeveloperName = Rollup.FULL_RECALC_GATE_PARAM_NAME, Value__c = ProceedGate.class.getName());
+
+    Test.startTest();
+    RollupFullRecalcGate gate = Rollup.resolveFullRecalcGate();
+    Test.stopTest();
+
+    Assert.isInstanceOfType(gate, ProceedGate.class, 'an unattached parameter is tolerated by getMatchingParameters and still resolves');
   }
 
   // ---- REVIEW R2-P3: a parameter under the right plugin but the wrong name is ignored ----
