@@ -250,14 +250,16 @@ global virtual without sharing class RollupAsyncProcessor extends Rollup impleme
 
   public virtual void finish(Database.BatchableContext context) {
     if (this.isTimingOut == false) {
-      try {
-        this.fullRecalcProcessor?.finish();
-      } finally {
-        // container-agnostic release: the Batchable failsafe completion path releases the gate too
-        // (the cursor-Queueable finalizer path is the other; hasNotifiedGate keeps this idempotent),
-        // even if finish() throws — else the Slice-2 lock would strand.
-        this.fullRecalcProcessor?.notifyGateComplete();
-      }
+      // No gate release here on purpose. The field is often non-null — deleting the call below
+      // reddens four tests — but a gate release through it can never be the RIGHT one. On the
+      // Batchable failsafe route it is null (not Database.Stateful; the state was captured at
+      // `Database.executeBatch`, before `performWork` assigns the self-reference), which is why
+      // RollupFullRecalcProcessor's finish override releases on `this` instead. The Queueable route
+      // lands here only when `fullRecalcProcessor?.isBatch() != true`, which excludes the sole
+      // gateable type. So wherever the field IS populated here it is a sibling or serialized copy of
+      // the conductor, and releasing from it is SEAM.md rule 6's early release — the failure a TTL
+      // cannot backstop. The absence is the safeguard.
+      this.fullRecalcProcessor?.finish();
     }
     context = context ?? new AdditionalContext(this.getNoProcessId());
     this.logger.log('finished successfully', context, System.LoggingLevel.INFO);
@@ -268,6 +270,21 @@ global virtual without sharing class RollupAsyncProcessor extends Rollup impleme
     // side effect in the below method - rollups can be removed from this.rollups if a control record ShouldAbortRun__c == true
     // they also can be added to syncRollups if we're already async
     List<RollupAsyncProcessor> syncRollups = new List<RollupAsyncProcessor>();
+    // snapshot BEFORE ingest: it relocates rollups out of this.rollups into syncRollups or the
+    // static cached-rollup list, so by the time a bail-out below walks the tree the gated rollup
+    // may no longer be in it. Releasing the pre-ingest set is safe for both destinations, but for
+    // two DIFFERENT reasons, and only one of them is "nothing ran". A bail arm means the syncRollups
+    // relocation never ran — `process(syncRollups)` sits in the `else`. The cached-rollup list is
+    // NOT covered by that: it gets drained and run later in the same transaction (via
+    // `populateOtherDeferredRollups`), so a gated rollup reaching it would make this release EARLY.
+    // What actually keeps it out is `getShouldRunSyncDeferred`, which requires `roll.op` to be
+    // non-null; `op` is assigned only in the inner-rollup constructor, and every
+    // `RollupFullRecalcProcessor` routes through `super(invokePoint)` instead, so a gated processor
+    // can never take that arm. That is a latent guarantee, not a designed one — re-derive it if a
+    // bump touches either constructor chain.
+    // Scoped to this conductor's own rollups — releasing straight from the static cache would hand
+    // back claims belonging to a sibling conductor that is still going.
+    List<RollupAsyncProcessor> preIngestRollups = new List<RollupAsyncProcessor>(this.rollups);
     Boolean shouldRunWithoutCustomSetting = this.ingestRollupControlData(syncRollups);
 
     Boolean isBasicNoOp = this.rollups.isEmpty() && syncRollups.isEmpty() && this.isFullRecalc == false;
@@ -302,9 +319,39 @@ global virtual without sharing class RollupAsyncProcessor extends Rollup impleme
     if (logMessage != null) {
       this.logger.log(logMessage, System.LoggingLevel.INFO);
       rollupProcessId = logMessage;
+      // Every branch that lands here decided NOT to run: no-op, ShouldAbortRun__c, the
+      // RollupSettings__c kill switch, or no matching rollups. The gate was consulted back at BUILD
+      // time, so nothing downstream will ever release a claim taken for this recalc — no job is
+      // enqueued and no finalizer fires. Releasing here is the only thing standing between an
+      // operator flipping IsEnabled__c off during a data load and every gated rollup group staying
+      // claimed until its TTL expires.
+      // Why a run that PROCESSED sync rollups cannot land here — the release would be early
+      // otherwise, and rule 6 says an early release is the one a TTL cannot backstop. It is the
+      // branch ORDER that guarantees it, not the process-id value: `isNoOp`, `ShouldAbortRun__c`
+      // and the `IsEnabled__c` kill switch are all evaluated BEFORE the `else` that calls
+      // `process(syncRollups)`, so reaching any of them means it never ran. The fourth arm
+      // ("No matching rollups") needs `rollupProcessId` to still be the initial 'no-op', which
+      // requires that neither the sync assignment nor `beginAsyncRollup()` ran. Do not restate this
+      // as "getNoProcessId() is never 'no-op'": that sentinel is overwritten unconditionally by the
+      // `beginAsyncRollup()` line above whenever this tree has rollups, so it proves nothing.
+      this.releaseFullRecalcGate();
+      for (RollupAsyncProcessor preIngestRollup : preIngestRollups) {
+        preIngestRollup.releaseFullRecalcGate();
+      }
     }
     this.logger.save();
     return rollupProcessId;
+  }
+
+  /**
+   * @description Releases any full-recalc gate armed anywhere in this processor's tree. Only
+   * `RollupFullRecalcProcessor` can carry a gate, but the processor whose `runCalc` bails is
+   * routinely a plain conductor holding the gated one in `rollups` — so this walks down.
+   */
+  protected virtual void releaseFullRecalcGate() {
+    for (RollupAsyncProcessor innerRoll : this.rollups) {
+      innerRoll.releaseFullRecalcGate();
+    }
   }
 
   protected virtual RollupRepository preStart() {
@@ -1249,8 +1296,26 @@ global virtual without sharing class RollupAsyncProcessor extends Rollup impleme
 
       String hashedRollupKey = rollup.getHashedContents() + rollup.calcItems?.hashCode() + rollup.oldCalcItems?.hashCode();
       if (hashedRollups.contains(hashedRollupKey)) {
+        // Same reasoning as the abort arm below: a silent removal from a conductor that then runs
+        // on never reaches runCalc's bail arm, so nothing downstream hands this claim back. The
+        // surviving twin does NOT cover it — the gate is resolved per rollup group and mints a
+        // fresh `runToken` each time, and the interface requires a release to be matched against
+        // that token, so the twin's release is a no-op for this instance's claim.
+        // Also not pinnable under aer: reaching it needs two identical rollups to survive the
+        // build-time `recordCount == 0` filter in one transaction.
+        rollup.releaseFullRecalcGate();
         this.rollups.remove(index);
       } else if (rollup.rollupControl.ShouldAbortRun__c || this.rollupControl.ShouldAbortRun__c) {
+        // Load-bearing, NOT redundant with runCalc's pre-ingest snapshot release, because the two
+        // conditions differ: this fires on `rollup.rollupControl.ShouldAbortRun__c` (a PER-ROLLUP
+        // control) as well as the conductor's, and `overrideParentRollupControlValues` propagates
+        // BatchChunkSize/MaxLookupRows/ShouldRunAs/ShouldDuplicateRulesBeIgnored to the conductor
+        // but deliberately NOT ShouldAbortRun__c. So one rollup can be aborted while the conductor
+        // runs on: the bail arm downstream is never reached, the snapshot release never fires, and
+        // this is the only thing that hands the claim back. The suite cannot pin it — a single
+        // `Rollup.defaultControl` short-circuits `getSingleControlOrDefault` for every rollup in
+        // the transaction, so divergent per-rollup controls are not constructible under aer.
+        rollup.releaseFullRecalcGate();
         this.rollups.remove(index);
       } else if (couldRunSync && shouldRunSyncDeferred == false) {
         this.calcItemReplacer?.resetShouldRunAs(RollupMetaPicklists.ShouldRunAs.Synchronous);

@@ -5,6 +5,15 @@
  * (success or catchable failure). With no implementation registered via `RollupPlugin__mdt`
  * the framework behaves exactly as it does today (fail-open). The gate keys on the rollup
  * (see `RollupFullRecalcContext`), never on the caller. Shaped for contribution upstream.
+ *
+ * An implementation MUST be serializable: the framework holds the gate instance on the processor it
+ * enqueues, so a non-serializable member fails at the enqueue rather than at the gate call, and
+ * presents as a rollup defect rather than a gate one.
+ *
+ * An implementation MUST also be stateless across calls. The framework resolves the gate per rollup
+ * group, so a bulk recalculation spanning N calc-item types constructs N separate instances, and a
+ * policy that accumulates claims in a member field would see each one in isolation. Correlate
+ * through `context.getRunToken()` and the policy's own durable state, never through instance state.
  */
 public interface RollupFullRecalcGate {
   /**
@@ -17,6 +26,25 @@ public interface RollupFullRecalcGate {
   /**
    * @description Fired once when a proceeded recalc terminally completes, on both the
    * success and catchable-failure paths, so a policy can release any state it claimed.
+   *
+   * The framework arms this release before it consults `beforeEnqueue`, so a gate that claims
+   * state and then throws is still released. The corollary is that this can fire for a recalc the
+   * gate never finished deciding on, and therefore never claimed anything for: an implementation
+   * must match the release against `context.getRunToken()` and treat an unmatched one as a no-op,
+   * never release unconditionally. The same holds when the framework itself abandons the recalc
+   * after the consult — an operator flipping `RollupSettings__c.IsEnabled__c` off, or
+   * `RollupControl__mdt.ShouldAbortRun__c` on — which releases without the recalc ever having run.
+   * It cannot fire, however, if the transaction dies
+   * between the gate consult and the enqueue (an uncaught exception, a governor limit). An
+   * implementation that claims state MUST therefore carry its own expiry — a TTL on the claim is
+   * the only backstop for that window, and a policy without one can strand a claim forever.
+   *
+   * Treat this as PERMISSION TO RE-CLAIM, never as proof the recalc finished. It can also arrive
+   * EARLY, while work for the same recalc is still queued: a Batchable chunk that defers rollups
+   * re-enqueues them as a separate job, and the terminal `finish` fires regardless (SEAM.md rule 7,
+   * gap B). A policy that keys anything on "the data is now settled" — cache invalidation, a
+   * downstream sync, a completion signal — is unsafe on that assumption. Releasing a claim is safe
+   * because the worst case is a redundant recalc; anything stronger is not.
    * @param context the same context captured at `beforeEnqueue` for this recalc
    */
   void afterComplete(RollupFullRecalcContext context);

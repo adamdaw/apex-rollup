@@ -54,8 +54,18 @@ global abstract without sharing class RollupFullRecalcProcessor extends RollupAs
 
   /**
    * @description Notifies the gate that this recalc has terminally completed, exactly once
-   * per logical recalc (idempotent across cursor pages / re-entry). Fails open: a throwing
-   * `afterComplete` is contained so it never breaks the finalizer.
+   * per logical recalc. Fails open: a throwing `afterComplete` is contained so it never breaks
+   * the finalizer.
+   *
+   * `hasNotifiedGate` is a per-INSTANCE latch, which is what the cursor chain needs — each page's
+   * Queueable is the serialized previous instance, so the latch travels with it. It does NOT span a
+   * sibling copy, so every release site must be one that only the owning processor reaches. There
+   * are four, and each qualifies: `FullRecalcFinalizer`'s terminal-success and unhandled-exception
+   * branches (both on the conductor they were built for), and this class's `releaseFullRecalcGate`
+   * and `finish(BatchableContext)` override (both on `this`). A fifth, through
+   * `RollupAsyncProcessor.finish`'s `fullRecalcProcessor`, was removed once it was shown it could
+   * only ever fire as a rule-6 early release. See SEAM.md rules 6 and 7 for the routing argument,
+   * and for the one shape that still escapes all four.
    */
   public void notifyGateComplete() {
     if (this.fullRecalcGate == null || this.hasNotifiedGate) {
@@ -65,7 +75,7 @@ global abstract without sharing class RollupFullRecalcProcessor extends RollupAs
     try {
       this.fullRecalcGate.afterComplete(this.fullRecalcContext);
     } catch (Exception ex) {
-      RollupLogger.Instance.log('full recalc gate afterComplete threw, continuing', System.LoggingLevel.WARN);
+      RollupLogger.Instance.log('full recalc gate afterComplete threw ' + ex.getTypeName() + ', continuing', ex, System.LoggingLevel.WARN);
     }
   }
 
@@ -136,6 +146,48 @@ global abstract without sharing class RollupFullRecalcProcessor extends RollupAs
     }
   }
 
+  /**
+   * @description Releases this processor's own gate claim when it completes as a Batchable.
+   *
+   * `RollupAsyncProcessor.finish(BatchableContext)` releases through `fullRecalcProcessor`, but that
+   * field is assigned during `execute()` (in `getDelegatedFullRecalcRollups`) and the Batchable is
+   * deliberately NOT `Database.Stateful` — the `finish()` instance is a fresh deserialization of the
+   * state captured at `Database.executeBatch`, where the field is still null. Every processor that
+   * reaches the failsafe route (`startAsyncWork` falls back to a Batchable when `Database.getCursor`
+   * is refused) would otherwise strand its claim silently. Here `this` IS the gated processor, and
+   * the serialized copy still carries the gate, so releasing on `this` is both correct and, via the
+   * `hasNotifiedGate` latch, idempotent with the inherited release.
+   *
+   * Deliberately NOT gated on `isTimingOut`, unlike the base implementation. This override is only
+   * ever reached as a Batchable, where `finish` is terminal by definition — the platform calls it
+   * once, after the last chunk. `isTimingOut` cannot mean "more work pending" here for the same
+   * not-Stateful reason the field above is null: the value is whatever was captured at
+   * `Database.executeBatch`, and `beginAsyncRollup` sets it false on the line before
+   * `startAsyncWork`. The failsafe route bypasses `beginAsyncRollup` and can therefore serialize a
+   * stale `true` from a previous page, so a guard here would suppress the only release the job will
+   * ever get — the exact strand this override exists to prevent.
+   *
+   * The Queueable route CAN land here, but never for a gated processor. `QueueableProcessor.execute`
+   * calls `finish(context)` when `fullRecalcProcessor?.isBatch() != true`, and that is also true of a
+   * null field — so a directly-enqueued `RollupDeferredFullRecalcProcessor` does arrive, and
+   * `notifyGateComplete()` no-ops there because it was never gated. What protects the gated case is
+   * not the `!= true` check but the assignment before it: `performWork` sets the
+   * `fullRecalcProcessor` self-reference, and a gated processor is always a
+   * `RollupFullBatchRecalculator` whose `isBatch()` is hardcoded true.
+   *
+   * The release is unconditional, and that is not the same as terminal. A chunk that defers rollups
+   * re-enqueues them as a separate job which outlives this call, so the release can be EARLY —
+   * SEAM.md rule 7 gap B, org-only, not fixable from anything observable here.
+   * @param context the batch context, forwarded untouched to the base implementation
+   */
+  public override void finish(Database.BatchableContext context) {
+    try {
+      super.finish(context);
+    } finally {
+      this.notifyGateComplete();
+    }
+  }
+
   public Set<String> getRecordIdentifiers() {
     return new Set<String>(this.recordIds);
   }
@@ -183,6 +235,11 @@ global abstract without sharing class RollupFullRecalcProcessor extends RollupAs
 
   protected override RollupRepository preStart() {
     return new RollupRepository(this.runAsMode).setArg(this.objIds).setArg('recordIds', this.recordIds).setQuery(this.queryString);
+  }
+
+  protected override void releaseFullRecalcGate() {
+    this.notifyGateComplete();
+    super.releaseFullRecalcGate();
   }
 
   protected List<RollupAsyncProcessor> getDelegatedFullRecalcRollups(List<SObject> calcItems) {

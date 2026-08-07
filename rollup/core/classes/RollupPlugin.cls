@@ -3,6 +3,12 @@ public without sharing class RollupPlugin {
   private static List<RollupPlugin__mdt> pluginMocks = new List<RollupPlugin__mdt>();
   @TestVisible
   private static RollupPluginParameter__mdt parameterMock;
+  // Mirrors Rollup.onlyUseMockMetadata: lets a test assert "no plugin is registered" without the
+  // org's real records deciding the outcome. A test that leaves this false and registers no mock is
+  // asserting against whatever the host org happens to have deployed — which passes in a repo with
+  // no records and then fails in the org that adds one.
+  @TestVisible
+  private static Boolean onlyUseMockPlugins = false;
 
   public RollupPlugin__mdt getInstance(String developerNameOrId) {
     for (RollupPlugin__mdt plugin : pluginMocks) {
@@ -10,22 +16,29 @@ public without sharing class RollupPlugin {
         return plugin;
       }
     }
-    return RollupPlugin__mdt.getInstance(developerNameOrId);
+    return onlyUseMockPlugins ? null : RollupPlugin__mdt.getInstance(developerNameOrId);
   }
 
   public List<RollupPlugin__mdt> getInstances() {
     List<RollupPlugin__mdt> plugins = new List<RollupPlugin__mdt>();
-    plugins.addAll(RollupPlugin__mdt.getAll().values());
+    if (onlyUseMockPlugins == false) {
+      plugins.addAll(RollupPlugin__mdt.getAll().values());
+    }
     plugins.addAll(pluginMocks);
     return plugins;
   }
 
   public RollupPluginParameter__mdt getParameterInstance(String developerNameOrId) {
-    return parameterMock ?? RollupPluginParameter__mdt.getInstance(developerNameOrId);
+    if (parameterMock != null) {
+      return parameterMock;
+    }
+    return onlyUseMockPlugins ? null : RollupPluginParameter__mdt.getInstance(developerNameOrId);
   }
 
   public List<RollupPluginParameter__mdt> getMatchingParameters(Id pluginId) {
-    List<RollupPluginParameter__mdt> pluginParameters = new List<RollupPluginParameter__mdt>(RollupPluginParameter__mdt.getAll().values());
+    List<RollupPluginParameter__mdt> pluginParameters = onlyUseMockPlugins
+      ? new List<RollupPluginParameter__mdt>()
+      : new List<RollupPluginParameter__mdt>(RollupPluginParameter__mdt.getAll().values());
     if (parameterMock != null) {
       pluginParameters.add(parameterMock);
     }
