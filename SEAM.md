@@ -23,20 +23,20 @@ CXS-300) **without forking rollup behavior**:
 - `extra-tests/classes/RollupFullRecalcGateTests.cls` — covers the seam in isolation (dormant-is-inert,
   fail-open paths, runToken stability).
 
-Two more files diverge for the seam's sake and are easy to lose in a rebase, because **nothing in the
-suite goes red if either is reverted to upstream** — check them by eye after every bump:
+Two more files diverge for the seam's sake:
 
 - `RollupPlugin.cls` — `onlyUseMockPlugins`. Test-only: it lets a test assert "nothing is registered"
-  without the host org's real records deciding the answer. Revert it and the two no-gate tests start
-  consulting whatever the org has deployed, which is green here and red in the org that registers the
-  gate. Pure instrumentation; production behaviour is identical while the flag is false.
+  without the host org's real records deciding the answer. Pure instrumentation; production behaviour
+  is identical while the flag is false. **This one announces itself** — the gate tests reference the
+  field by name, so reverting the file to upstream is a compile error, not a silent green.
 - `RollupTests.cls` — the async-job stub in `fallsBackToRunningSyncWhenOutOfAsyncJobs` uses a literal
   above any org's limit instead of upstream's `250001`. `DailyAsyncApexExecutions` scales with
   licenses (259,400 in a 100+-seat org), so upstream's literal does not exceed it there and the test
   fails in a real org. It passes either way under `aer`, so only a real org run catches a revert.
-  This one is a genuine upstream bug and is the best candidate to PR away.
+  This one is a genuine upstream bug and is the best candidate to PR away. **Check it by eye after
+  every bump** — nothing in the suite goes red if it is reverted.
 
-Six rules hold the seam together; breaking any of them reintroduces a bug we already shipped once:
+Seven rules hold the seam together; breaking any of them reintroduces a bug we already shipped once:
 
 1. **Resolve the gate before building the context.** `RollupFullRecalcContext`'s constructor clones the
    metadata list, copies every in-scope parent id, derives the key and mints a token via
@@ -95,6 +95,30 @@ Six rules hold the seam together; breaking any of them reintroduces a bug we alr
    speculative divergence on upstream-owned files once the routing was traced. If a bump changes
    either `isBatch()` or that branch in `execute`, re-derive this before shipping.
 
+7. **A processor that completes as a Batchable releases on `this`, not on `fullRecalcProcessor`.**
+   `startAsyncWork` falls back to `FullBatchQueueableFailsafe` → `Database.executeBatch` whenever
+   `Database.getCursor` is refused. That Batchable is deliberately not `Database.Stateful`, so the
+   instance reaching `finish(BatchableContext)` is deserialized from the state captured at
+   `executeBatch` — before `performWork` assigns the `fullRecalcProcessor` self-reference. The
+   inherited release reads that field and finds null, silently. `RollupFullRecalcProcessor` therefore
+   overrides `finish(BatchableContext)` and releases `this` in a `finally`; the `hasNotifiedGate`
+   latch keeps it idempotent with the inherited call. Pinned end to end by
+   `suppressedConductorStillRunsTheOtherRollupGroups`, which asserts the released KEYS against the
+   proceeded ones, and at unit level by `batchableFailsafeCompletionReleasesGate`.
+
+   **Known gap, org-only and not fixed here.** With **three or more gated groups in one chain**,
+   `RollupFullRecalcProcessor.finish()` runs `conductor.finalizer = conductor.finalizer ?? this.finalizer`
+   (upstream, since v1.7.27) and the promoted conductor inherits a `FullRecalcFinalizer` bound to the
+   PROMOTER. When the promoted conductor's job completes on the cursor path, `handleSuccess` releases
+   the promoter — already latched — and the promoted group's own claim strands. Rule 7's override does
+   not reach it because the cursor path is a Queueable, not a Batchable. It is **not reproducible in
+   an Apex test at any layer**: driving three proceeded groups through `performBulkFullRecalc` hits
+   the platform's in-test queueable chaining cap (`Too many queueable jobs added to the queue: 2`)
+   before the third group starts. Under `aer` every group after the first takes the failsafe route
+   anyway, so rule 7 covers them and the gap never shows. A gate implementation must treat a missing
+   `afterComplete` as possible and rely on its TTL; do not assume the release is guaranteed for the
+   third and later groups of a bulk recalc.
+
 **Zero behavior change unless a gate class is registered.** With no `RollupPlugin__mdt` registration the
 seam is inert, so it is safe to carry on top of any upstream release.
 
@@ -141,7 +165,7 @@ Resolve conflicts (historically only in `extra-tests/testSuites/ApexRollupTestSu
 when upstream reorganizes tests). Then **verify with aer** before tagging:
 
 ```
-aer test rollup extra-tests --skip-errors -f RollupFullRecalcGateTests   # seam: expect 41/41
+aer test rollup extra-tests --skip-errors -f RollupFullRecalcGateTests   # seam: expect 42/42
 aer test rollup extra-tests --skip-errors -f ZZ                          # carries: expect 19/19
 ```
 

@@ -14,6 +14,9 @@ public class RollupFullRecalcGateTests {
   static Integer claimCount = 0;
   static RollupFullRecalcContext capturedContext;
   static RollupFullRecalcContext capturedCompleteContext;
+  static List<String> probeProceeded = new List<String>();
+  static List<String> probeReleased = new List<String>();
+  static Integer notAGateConstructions = 0;
 
   @TestSetup
   static void setup() {
@@ -69,10 +72,15 @@ public class RollupFullRecalcGateTests {
   public class SuppressFirstThenProceedGate implements RollupFullRecalcGate {
     public RollupFullRecalcContext.Decision beforeEnqueue(RollupFullRecalcContext context) {
       beforeEnqueueCount++;
-      return beforeEnqueueCount == 1 ? RollupFullRecalcContext.Decision.SUPPRESS : RollupFullRecalcContext.Decision.PROCEED;
+      if (beforeEnqueueCount == 1) {
+        return RollupFullRecalcContext.Decision.SUPPRESS;
+      }
+      probeProceeded.add(context.getRecalcKey());
+      return RollupFullRecalcContext.Decision.PROCEED;
     }
-    @SuppressWarnings('PMD.EmptyStatementBlock')
     public void afterComplete(RollupFullRecalcContext context) {
+      afterCompleteCount++;
+      probeReleased.add(context.getRecalcKey());
     }
   }
 
@@ -120,7 +128,13 @@ public class RollupFullRecalcGateTests {
 
   // A resolvable type that does NOT implement the gate interface.
   @SuppressWarnings('PMD.EmptyStatementBlock')
+  // Resolves via Type.forName but does not implement the interface. The constructor records that it
+  // ran, which is the whole point of the assignability guard: without it the resolver would call
+  // newInstance() and execute an arbitrary misconfigured class's constructor before the cast failed.
   public class NotAGate {
+    public NotAGate() {
+      notAGateConstructions++;
+    }
   }
 
   // Records that the base finalizer failure branch invoked the new virtual hook.
@@ -421,6 +435,7 @@ public class RollupFullRecalcGateTests {
   static void nonAssignableGateFailsOpenOnRealPath() {
     Rollup.defaultControl = new RollupControl__mdt(IsRollupLoggingEnabled__c = true, MaxLookupRowsBeforeBatching__c = 0);
     insert as system new Contact(LastName = 'not a gate real path');
+    notAGateConstructions = 0;
     // NotAGate resolves via Type.forName but does not implement RollupFullRecalcGate
     registerGate(NotAGate.class.getName());
 
@@ -430,6 +445,9 @@ public class RollupFullRecalcGateTests {
     RollupFullRecalcProcessor cached = Rollup.CACHED_FULL_RECALCS.get(0);
     Assert.isTrue(cached instanceof RollupFullBatchRecalculator, 'a non-assignable gate class must resolve null and proceed unchanged');
     Assert.isFalse(cached instanceof RollupSuppressedFullRecalc, 'a non-assignable gate class must never substitute a processor');
+    // pins the guard rather than the outcome: dropping the isAssignableFrom check also fails open,
+    // via the cast throwing into the catch — but only after newInstance() has run this constructor.
+    Assert.areEqual(0, notAGateConstructions, 'a class that cannot be a gate must never be instantiated');
     Test.stopTest();
   }
 
@@ -621,8 +639,11 @@ public class RollupFullRecalcGateTests {
     afterCompleteCount = 0;
     RollupFullBatchRecalculator batch = buildBatchRecalc();
     batch.setFullRecalcGate(new ProceedGate(), buildContext());
-    // mirror the self-reference the real failsafe path sets during performWork
-    batch.fullRecalcProcessor = batch;
+    // deliberately NOT setting fullRecalcProcessor: the Batchable is not Database.Stateful, so the
+    // instance that reaches finish() is deserialized from the state captured at
+    // Database.executeBatch — before performWork ever assigns the self-reference. An end-to-end
+    // trace of performBulkFullRecalc through the failsafe route confirms it arrives null. The
+    // release therefore has to come from `this`, not from the field.
 
     Test.startTest();
     // the real Batchable success-completion entry point (a null context is handled internally)
@@ -919,6 +940,7 @@ public class RollupFullRecalcGateTests {
     // MaxLookupRowsBeforeBatching__c = 0 forces the cursor path; ShouldRunAs__c left null keeps
     // performBulkFullRecalc's conductor-promotion branch in play.
     beforeEnqueueCount = 0;
+    afterCompleteCount = 0;
     Rollup.defaultControl = new RollupControl__mdt(IsRollupLoggingEnabled__c = true, MaxLookupRowsBeforeBatching__c = 0);
     registerGate(SuppressFirstThenProceedGate.class.getName());
 
@@ -941,6 +963,51 @@ public class RollupFullRecalcGateTests {
       rolledUpParents++;
     }
     Assert.areEqual(2, rolledUpParents, 'both groups the gate proceeded must still run when the suppressed one is promoted to conductor');
+    // the release accounting, which is the whole point of the seam: one afterComplete per PROCEEDED
+    // group, no more and no fewer. Asserting the keys and not just the count catches the failure
+    // this replaced — a second release fired for the FIRST group's key while the second stranded.
+    probeProceeded.sort();
+    probeReleased.sort();
+    Assert.areEqual(probeProceeded, probeReleased, 'exactly one release per proceeded group, keyed to that group');
+  }
+
+  // ---- REVIEW R5-F4: the bail-out release must walk DOWN, not just release the processor whose
+  // runCalc bailed. performBulkFullRecalc hangs the other groups off the conductor's `rollups`, so a
+  // conductor-only release strands every group but the first. ----
+  @IsTest
+  static void killSwitchReleasesEveryGroupTheConductorCarries() {
+    Account parentAccount = [SELECT Id FROM Account WITH SYSTEM_MODE];
+    insert as system new Contact(LastName = 'gate walk contact', AccountId = parentAccount.Id);
+    insert as system new Opportunity(
+      Name = 'gate walk opp',
+      StageName = 'Prospecting',
+      CloseDate = System.today(),
+      AccountId = parentAccount.Id,
+      Amount = 1000
+    );
+    ParentApplication__c parentApp = new ParentApplication__c(Name = 'gate walk parent app', Account__c = parentAccount.Id);
+    insert as system parentApp;
+    insert as system new Application__c(Name = 'gate walk app', ParentApplication__c = parentApp.Id, Engagement_Score__c = 7);
+
+    // set AFTER the fixtures, for the reason spelled out in the suppressed-conductor test below.
+    beforeEnqueueCount = 0;
+    afterCompleteCount = 0;
+    Rollup.defaultControl = new RollupControl__mdt(IsRollupLoggingEnabled__c = true, MaxLookupRowsBeforeBatching__c = 0);
+    registerGate(ProceedGate.class.getName());
+    RollupSettings__c settings = RollupSettings__c.getInstance();
+    settings.IsEnabled__c = false;
+    upsert as system settings;
+
+    Test.startTest();
+    String processId = Rollup.performBulkFullRecalc(bulkMetasForThreeCalcItemTypes(), Rollup.InvocationPoint.FROM_FULL_RECALC_LWC.name());
+    Test.stopTest();
+
+    Assert.areEqual(3, beforeEnqueueCount, 'precondition: the gate claimed all three groups at build time');
+    Assert.isTrue(
+      processId.contains('IsEnabled__c is false'),
+      'precondition: the kill switch aborted the recalc, so no finalizer will ever run for any group. Got: ' + processId
+    );
+    Assert.areEqual(3, afterCompleteCount, 'the conductor must release the groups it carries in `rollups`, not only its own claim');
   }
 
   // ---- REVIEW R6-A: the parent-reset processor passes the type test and must still not be gated ----

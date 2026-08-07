@@ -2447,7 +2447,17 @@ global without sharing virtual class Rollup implements RollupLogger.ToStringObje
         return null;
       }
       typeName = getFullRecalcGateClassName(plugin, gatePlugin.Id);
-      Type gateType = typeName == null ? null : Type.forName(typeName);
+      if (typeName == null) {
+        // distinct from the unresolvable case below: the plugin record is the on/off switch and an
+        // operator has switched it on, but never named an implementation. Reporting that as
+        // 'gate "null" is not resolvable' sends them looking for a class that was never configured.
+        RollupLogger.Instance.log(
+          'full recalc gate plugin is registered with no ' + FULL_RECALC_GATE_PARAM_NAME + ' parameter, proceeding ungated',
+          System.LoggingLevel.WARN
+        );
+        return null;
+      }
+      Type gateType = Type.forName(typeName);
       if (gateType != null && RollupFullRecalcGate.class.isAssignableFrom(gateType)) {
         return (RollupFullRecalcGate) gateType.newInstance();
       }

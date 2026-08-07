@@ -59,8 +59,12 @@ global abstract without sharing class RollupFullRecalcProcessor extends RollupAs
    *
    * `hasNotifiedGate` is a per-INSTANCE latch, which is what the cursor chain needs — each page's
    * Queueable is the serialized previous instance, so the latch travels with it. It does NOT span a
-   * sibling copy, so every release site must be one that only the owning processor reaches. Both
-   * current sites qualify; see SEAM.md rule 6 for why a delegated inner rollup cannot reach one.
+   * sibling copy, so every release site must be one that only the owning processor reaches. There
+   * are five, and each qualifies: `FullRecalcFinalizer`'s terminal-success and unhandled-exception
+   * branches (both on the conductor they were built for), this class's `releaseFullRecalcGate` and
+   * its `finish(BatchableContext)` override (both on `this`), and `RollupAsyncProcessor`'s
+   * Batchable finish through `fullRecalcProcessor`. See SEAM.md rules 6 and 7 for the routing
+   * argument behind the last two, and for the one shape that still escapes them.
    */
   public void notifyGateComplete() {
     if (this.fullRecalcGate == null || this.hasNotifiedGate) {
@@ -138,6 +142,34 @@ global abstract without sharing class RollupFullRecalcProcessor extends RollupAs
       List<SObject> parentRecords = new List<SObject>();
       this.processParentFieldsToReset(parentRecords);
       this.getDML().doUpdate(parentRecords);
+    }
+  }
+
+  /**
+   * @description Releases this processor's own gate claim when it completes as a Batchable.
+   *
+   * `RollupAsyncProcessor.finish(BatchableContext)` releases through `fullRecalcProcessor`, but that
+   * field is assigned during `execute()` (in `getDelegatedFullRecalcRollups`) and the Batchable is
+   * deliberately NOT `Database.Stateful` — the `finish()` instance is a fresh deserialization of the
+   * state captured at `Database.executeBatch`, where the field is still null. Every processor that
+   * reaches the failsafe route (`startAsyncWork` falls back to a Batchable when `Database.getCursor`
+   * is refused) would otherwise strand its claim silently. Here `this` IS the gated processor, and
+   * the serialized copy still carries the gate, so releasing on `this` is both correct and, via the
+   * `hasNotifiedGate` latch, idempotent with the inherited release.
+   *
+   * Gated on `isTimingOut` for the same reason the base implementation is: a job that hit governor
+   * limits has deferred work and is NOT terminally complete. Releasing there would hand the claim
+   * back while the recalc is still running, and an early release is worse than a late one — a TTL
+   * backstops a late release, nothing backstops an early one.
+   * @param context the batch context, forwarded untouched to the base implementation
+   */
+  public override void finish(Database.BatchableContext context) {
+    try {
+      super.finish(context);
+    } finally {
+      if (this.isTimingOut == false) {
+        this.notifyGateComplete();
+      }
     }
   }
 
