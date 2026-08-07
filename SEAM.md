@@ -44,12 +44,19 @@ Seven rules hold the seam together; breaking any of them reintroduces a bug we a
    every cursor-path full recalc pays for a context it throws away. **Not pinned by a test**: delete
    the `gate == null` short-circuit and the suite stays green, because the outcome is identical and
    only the cost differs. Check this one by eye on every bump.
-2. **Arm the release before consulting `beforeEnqueue`.** `setFullRecalcGate` runs first so a policy that
-   claims its lock and then throws still gets its `afterComplete`. This is safe only because the
-   interface REQUIRES an implementation to match a release against `context.getRunToken()` and no-op
-   an unmatched one — the framework does not enforce it. Arming early is free to us and paid for by
-   every gate implementer, so do not weaken that clause in `RollupFullRecalcGate` to make this rule
-   cheaper.
+2. **A gate that claims its lock and then throws must still get its `afterComplete`.** The load-bearing
+   part is that the `catch` around `beforeEnqueue` FALLS THROUGH to a gated processor; upstream's
+   shape returned from inside the catch and left it ungated, stranding the claim. `setFullRecalcGate`
+   runs before the consult, which is the obvious way to get that, but the order is not itself the
+   invariant — moving it below the try/catch keeps `claimThenThrowStillReleasesTheClaim` green.
+   Do not "simplify" by restoring an early return in the catch.
+
+   Either shape releases for a recalc the gate never finished deciding on, so the interface REQUIRES
+   an implementation to match a release against `context.getRunToken()` and no-op an unmatched one —
+   the framework does not enforce it. That requirement is inherent to failing open, not a cost of
+   the arming order, so do not weaken the clause in `RollupFullRecalcGate` on the theory that
+   rearranging this method would pay for it.
+
 3. **A recalc that is consulted but never enqueued must still be released.** The gate is consulted at
    BUILD time; `runCalc` decides at RUN time and has several exits that log and return without
    enqueueing anything — `isNoOp`, `RollupControl__mdt.ShouldAbortRun__c`, the

@@ -3110,12 +3110,9 @@ private class RollupTests {
       new List<ContactPointAddress>{ new ContactPointAddress(Name = 'One', PreferenceRank = 50) }
     );
     Rollup.apexContext = TriggerOperation.AFTER_INSERT;
-    // Over ANY org's limit. DailyAsyncApexExecutions is not fixed at 250000 — it scales with
-    // licenses (259400 in the org this was caught in) — and HAS_EXCEEDED_ORG_ASYNC_JOB_LIMIT
-    // compares this stub against getLimit(), so a literal 250001 does not exceed it there: the
-    // rollup runs async, the queueable never fires (this test omits Test.stopTest() on purpose)
-    // and the assertion reads 0.
-    RollupLimits.currentAsyncJobsUsed = 2147483647;
+    // Derived, not hardcoded: DailyAsyncApexExecutions scales with licenses (259400 where upstream's
+    // literal 250001 was caught failing), and the limit check is a comparison against getLimit().
+    RollupLimits.currentAsyncJobsUsed = System.OrgLimits.getMap().get('DailyAsyncApexExecutions').getLimit() + 1;
 
     // specifically no Test.startTest()/Test.stopTest() to prove it's been run sync
     Rollup.sumFromApex(ContactPointAddress.PreferenceRank, ContactPointAddress.ParentId, Account.Id, Account.AnnualRevenue, Account.SObjectType).runCalc();

@@ -14,10 +14,25 @@
  * scope the flag survives and `addRollup` drops it instead, which is equally correct because there
  * is no work either way.
  *
- * `runCalc` below is what actually makes it inert on every path the framework drives today, and it
- * returns before `startAsyncWork` or `performWork` can be reached — those two are unreachable
- * belt-and-braces, kept because the cost of a substitute that quietly does real work is far higher
- * than two dead overrides on a file the fork owns outright (no upstream rebase surface here).
+ * **Two different overrides make it inert, depending on how many groups the recalc covers, and
+ * neither is optional.** With two or more groups, `performBulkFullRecalcInternal` promotes
+ * `processors[0]` to conductor and `runCalc` below is the entry point. With exactly ONE group —
+ * the primary case for a concurrency gate — that promotion branch is skipped, `Rollup.batch()`
+ * builds a plain conductor around the substitute, and `getAsyncRollup`'s
+ * `rollups.size() == 1 && rollups[0] instanceof RollupFullRecalcProcessor` arm hands the substitute
+ * straight to `beginAsyncRollup()`. `runCalc` is never called on that path; `startAsyncWork` is the
+ * only thing standing between a suppressed recalc and a real enqueued job.
+ *
+ * `performWork` is genuinely unreachable — but only because `startAsyncWork` returns without
+ * enqueueing, so `execute` never runs. It is kept as belt-and-braces on a file the fork owns
+ * outright (no upstream rebase surface), because the cost of a substitute that quietly does real
+ * work is far higher than one dead override.
+ *
+ * An earlier revision of this docstring claimed `startAsyncWork` was dead too, on the strength of a
+ * `Limits.getQueueableJobs()` assertion that sat AFTER `Test.stopTest()` and therefore read the
+ * restored outer limit context — it could not fail. Both assertions now sit inside the test block,
+ * and deleting this override reddens `realPathSuppressSubstitutesBuiltProcessor` with an actual
+ * enqueued job. Do not trust a queueable-count assertion placed after `stopTest`.
  *
  * The gate is not carried through to this substitute on purpose. A suppressed run claimed nothing
  * of its own — the state it collided with belongs to the run already in flight — so there is

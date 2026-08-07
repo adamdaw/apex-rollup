@@ -364,9 +364,11 @@ public class RollupFullRecalcGateTests {
     RollupFullRecalcProcessor cached = Rollup.CACHED_FULL_RECALCS.get(0);
     Assert.isTrue(cached instanceof RollupSuppressedFullRecalc, 'SUPPRESS must substitute the built cursor processor on the real entry path');
     Assert.isFalse(cached instanceof RollupFullBatchRecalculator, 'the substitute must not be the cursor batch recalculator');
-    Test.stopTest();
-
+    // INSIDE the test block on purpose: Test.stopTest() restores the outer limit context, so a
+    // getQueueableJobs() assertion after it reads zero whatever the substitute did. This one is the
+    // only thing standing between a suppressed recalc and actually running.
     Assert.areEqual(0, Limits.getQueueableJobs(), 'the suppressed substitute enqueues no async work through the real entry path');
+    Test.stopTest();
   }
 
   // ---- F1b (real path): PROCEED keeps the cursor processor AND consults the gate exactly once ----
@@ -827,13 +829,14 @@ public class RollupFullRecalcGateTests {
     Test.startTest();
     RollupFullRecalcProcessor result = Rollup.applyFullRecalcGate(original, new SuppressGate(), buildContext());
     String runResult = result.runCalc();
+    // see realPathSuppressSubstitutesBuiltProcessor: after stopTest this reads the outer context
+    Assert.areEqual(0, Limits.getQueueableJobs(), 'the suppressed substitute enqueues no async work');
     Test.stopTest();
 
     Assert.isTrue(result instanceof RollupSuppressedFullRecalc, 'SUPPRESS must return the no-op substitute');
     Assert.isFalse(result instanceof RollupFullBatchRecalculator, 'the substitute must not be a RollupFullBatchRecalculator');
     Assert.isFalse(result == original, 'the substitute must replace the original processor');
     Assert.areEqual(result.getNoProcessId(), runResult, 'the substitute performs no async work');
-    Assert.areEqual(0, Limits.getQueueableJobs(), 'the suppressed substitute enqueues no async work');
   }
 
   // ---- REVIEW R4-F1: the kill switches abort AFTER the gate was consulted — release anyway ----
@@ -1172,11 +1175,10 @@ public class RollupFullRecalcGateTests {
 
     Assert.areEqual(1, claimCount, 'precondition: the gate claimed before it threw');
     Assert.isTrue(result == original, 'a throwing beforeEnqueue must proceed unchanged');
-    Assert.areEqual(
-      1,
-      afterCompleteCount,
-      'the release must be armed BEFORE beforeEnqueue is consulted, or a claim taken by a gate that then throws strands until TTL'
-    );
+    // what this actually pins is the catch FALLING THROUGH to an armed processor, not the arming
+    // order — moving setFullRecalcGate below the try/catch keeps this green. The bug it guards is
+    // upstream's `return fullRecalc;` inside the catch, which left the processor ungated.
+    Assert.areEqual(1, afterCompleteCount, 'a claim taken by a gate that then throws must still be released, not stranded until TTL');
   }
 
   // ---- REVIEW R2-P3: the gate class name must come from a parameter scoped to the gate plugin ----

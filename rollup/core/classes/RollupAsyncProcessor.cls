@@ -1280,11 +1280,15 @@ global virtual without sharing class RollupAsyncProcessor extends Rollup impleme
       if (hashedRollups.contains(hashedRollupKey)) {
         this.rollups.remove(index);
       } else if (rollup.rollupControl.ShouldAbortRun__c || this.rollupControl.ShouldAbortRun__c) {
-        // aborted rollups leave the tree HERE, before runCalc's release walk further down can see
-        // them, so the walk alone would miss a gate armed on one of them. The two branches below
-        // relocate rather than drop, and normally the relocated rollup still runs — but if runCalc
-        // then bails, it does not, which is why runCalc releases from a pre-ingest snapshot rather
-        // than trusting this list. Releasing here as well is free: the latch makes it idempotent.
+        // Load-bearing, NOT redundant with runCalc's pre-ingest snapshot release, because the two
+        // conditions differ: this fires on `rollup.rollupControl.ShouldAbortRun__c` (a PER-ROLLUP
+        // control) as well as the conductor's, and `overrideParentRollupControlValues` propagates
+        // BatchChunkSize/MaxLookupRows/ShouldRunAs/ShouldDuplicateRulesBeIgnored to the conductor
+        // but deliberately NOT ShouldAbortRun__c. So one rollup can be aborted while the conductor
+        // runs on: the bail arm downstream is never reached, the snapshot release never fires, and
+        // this is the only thing that hands the claim back. The suite cannot pin it — a single
+        // `Rollup.defaultControl` short-circuits `getSingleControlOrDefault` for every rollup in
+        // the transaction, so divergent per-rollup controls are not constructible under aer.
         rollup.releaseFullRecalcGate();
         this.rollups.remove(index);
       } else if (couldRunSync && shouldRunSyncDeferred == false) {
