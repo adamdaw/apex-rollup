@@ -40,10 +40,17 @@ Seven rules hold the seam together; breaking any of them reintroduces a bug we a
 
 1. **Resolve the gate before building the context.** `RollupFullRecalcContext`'s constructor clones the
    metadata list, copies every in-scope parent id, derives the key and mints a token via
-   `Crypto.generateAesKey`. Build it first and the "dormant seam costs nothing" claim stops being true —
-   every cursor-path full recalc pays for a context it throws away. **Not pinned by a test**: delete
-   the `gate == null` short-circuit and the suite stays green, because the outcome is identical and
-   only the cost differs. Check this one by eye on every bump.
+   `Crypto.generateAesKey`. Build it first and every cursor-path full recalc pays for a context it
+   throws away. **Not pinned by a test**: delete the `gate == null` short-circuit and the suite stays
+   green, because the outcome is identical and only the cost differs. Check this one by eye on every
+   bump.
+
+   Read this as "keep the seam's per-recalc cost proportionate", not "the dormant seam allocates
+   nothing anywhere". It does not hold literally: rule 3's pre-ingest snapshot copies `this.rollups`
+   on **every** `runCalc`, gated or not. That one is a shallow copy of a handful of processors and
+   buying it back is what produced a live-list alias a cold round had to catch, so it stays — but do
+   not cite rule 1 as a reason to shave an allocation whose absence costs correctness.
+
 2. **A gate that claims its lock and then throws must still get its `afterComplete`.** The load-bearing
    part is that the `catch` around `beforeEnqueue` FALLS THROUGH to a gated processor; upstream's
    shape returned from inside the catch and left it ungated, stranding the claim. `setFullRecalcGate`
@@ -72,10 +79,19 @@ Seven rules hold the seam together; breaking any of them reintroduces a bug we a
    duplicate carries its own `runToken`, so its release does not cover the one dropped), and it
    _relocates_ a rollup
    that `couldRunSync` into either the local `syncRollups` list or the static cached-rollup list.
-   The relocated ones normally run — but on a bail nothing runs, `process(syncRollups)` sits in the
-   `else`, and the walk sees an empty tree. `runCalc` therefore releases from a **pre-ingest
-   snapshot** of `this.rollups`, which covers every relocation destination without reaching into
-   the static cache, where a sibling conductor's still-live rollups also sit. `couldRunSync` is
+   `runCalc` therefore releases from a **pre-ingest snapshot** of `this.rollups`, which covers every
+   relocation destination without reaching into the static cache, where a sibling conductor's
+   still-live rollups also sit.
+
+   **The two destinations are safe for different reasons, and only one of them is "nothing ran".**
+   For `syncRollups` it is exactly that: `process(syncRollups)` sits in the `else`, so a bail arm
+   means it never ran. The static cached-rollup list is NOT covered by that argument — it is drained
+   and run later in the same transaction via `populateOtherDeferredRollups`, so a gated rollup
+   landing there would make the snapshot release EARLY. What keeps it out is
+   `getShouldRunSyncDeferred`, which requires `roll.op` to be non-null: `op` is assigned only in the
+   inner-rollup constructor, and every `RollupFullRecalcProcessor` routes through
+   `super(invokePoint)` instead. That is a **latent** guarantee, not a designed one, and it is not
+   pinned by anything — re-derive it if a bump touches either constructor chain. `couldRunSync` is
    satisfied by `ShouldRunAs__c = Synchronous` (which
    `setControlToSyncForSingularParentRecalcs` forces for `FROM_SINGULAR_PARENT_RECALC_LWC`), by any
    already-async run that is not timing out, or by an exceeded org async limit — so this is a live

@@ -250,13 +250,15 @@ global virtual without sharing class RollupAsyncProcessor extends Rollup impleme
 
   public virtual void finish(Database.BatchableContext context) {
     if (this.isTimingOut == false) {
-      // No gate release here on purpose. A release through `fullRecalcProcessor` can never be the
-      // right one: on the Batchable route the field is null (not Database.Stateful — see
-      // RollupFullRecalcProcessor's finish override, which releases on `this` instead), and the
-      // Queueable route only lands here when `fullRecalcProcessor?.isBatch() != true`, which
-      // excludes the sole gateable type. The one shape that would reach it is a delegated inner
-      // rollup releasing from its own serialized copy of the conductor — SEAM.md rule 6's early
-      // release, the failure a TTL cannot backstop. So the absence is the safeguard.
+      // No gate release here on purpose. The field is often non-null — deleting the call below
+      // reddens four tests — but a gate release through it can never be the RIGHT one. On the
+      // Batchable failsafe route it is null (not Database.Stateful; the state was captured at
+      // `Database.executeBatch`, before `performWork` assigns the self-reference), which is why
+      // RollupFullRecalcProcessor's finish override releases on `this` instead. The Queueable route
+      // lands here only when `fullRecalcProcessor?.isBatch() != true`, which excludes the sole
+      // gateable type. So wherever the field IS populated here it is a sibling or serialized copy of
+      // the conductor, and releasing from it is SEAM.md rule 6's early release — the failure a TTL
+      // cannot backstop. The absence is the safeguard.
       this.fullRecalcProcessor?.finish();
     }
     context = context ?? new AdditionalContext(this.getNoProcessId());
@@ -270,9 +272,18 @@ global virtual without sharing class RollupAsyncProcessor extends Rollup impleme
     List<RollupAsyncProcessor> syncRollups = new List<RollupAsyncProcessor>();
     // snapshot BEFORE ingest: it relocates rollups out of this.rollups into syncRollups or the
     // static cached-rollup list, so by the time a bail-out below walks the tree the gated rollup
-    // may no longer be in it. Every bail arm means nothing ran, so releasing the pre-ingest set is
-    // both safe and necessary. Scoped to this conductor's own rollups — releasing straight from the
-    // static cache would hand back claims belonging to a sibling conductor that is still going.
+    // may no longer be in it. Releasing the pre-ingest set is safe for both destinations, but for
+    // two DIFFERENT reasons, and only one of them is "nothing ran". A bail arm means the syncRollups
+    // relocation never ran — `process(syncRollups)` sits in the `else`. The cached-rollup list is
+    // NOT covered by that: it gets drained and run later in the same transaction (via
+    // `populateOtherDeferredRollups`), so a gated rollup reaching it would make this release EARLY.
+    // What actually keeps it out is `getShouldRunSyncDeferred`, which requires `roll.op` to be
+    // non-null; `op` is assigned only in the inner-rollup constructor, and every
+    // `RollupFullRecalcProcessor` routes through `super(invokePoint)` instead, so a gated processor
+    // can never take that arm. That is a latent guarantee, not a designed one — re-derive it if a
+    // bump touches either constructor chain.
+    // Scoped to this conductor's own rollups — releasing straight from the static cache would hand
+    // back claims belonging to a sibling conductor that is still going.
     List<RollupAsyncProcessor> preIngestRollups = new List<RollupAsyncProcessor>(this.rollups);
     Boolean shouldRunWithoutCustomSetting = this.ingestRollupControlData(syncRollups);
 
