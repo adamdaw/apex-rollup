@@ -9,6 +9,11 @@
  * An implementation MUST be serializable: the framework holds the gate instance on the processor it
  * enqueues, so a non-serializable member fails at the enqueue rather than at the gate call, and
  * presents as a rollup defect rather than a gate one.
+ *
+ * An implementation MUST also be stateless across calls. The framework resolves the gate per rollup
+ * group, so a bulk recalculation spanning N calc-item types constructs N separate instances, and a
+ * policy that accumulates claims in a member field would see each one in isolation. Correlate
+ * through `context.getRunToken()` and the policy's own durable state, never through instance state.
  */
 public interface RollupFullRecalcGate {
   /**

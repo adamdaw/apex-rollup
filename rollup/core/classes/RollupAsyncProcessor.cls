@@ -250,19 +250,14 @@ global virtual without sharing class RollupAsyncProcessor extends Rollup impleme
 
   public virtual void finish(Database.BatchableContext context) {
     if (this.isTimingOut == false) {
-      try {
-        this.fullRecalcProcessor?.finish();
-      } finally {
-        // container-agnostic release: the Batchable failsafe completion path releases the gate too
-        // (the cursor-Queueable finalizer path is the other; hasNotifiedGate keeps this idempotent),
-        // even if finish() throws — else the lock would strand.
-        // Only the conductor reaches here: execute() routes a delegated inner rollup to
-        // executeFinish() whenever its conductor isBatch(), and the only gateable conductor is a
-        // RollupFullBatchRecalculator, for which that is always true. See SEAM.md rule 6 — if that
-        // routing ever changes, a delegate's serialized copy would release while the conductor is
-        // still paging.
-        this.fullRecalcProcessor?.notifyGateComplete();
-      }
+      // No gate release here on purpose. A release through `fullRecalcProcessor` can never be the
+      // right one: on the Batchable route the field is null (not Database.Stateful — see
+      // RollupFullRecalcProcessor's finish override, which releases on `this` instead), and the
+      // Queueable route only lands here when `fullRecalcProcessor?.isBatch() != true`, which
+      // excludes the sole gateable type. The one shape that would reach it is a delegated inner
+      // rollup releasing from its own serialized copy of the conductor — SEAM.md rule 6's early
+      // release, the failure a TTL cannot backstop. So the absence is the safeguard.
+      this.fullRecalcProcessor?.finish();
     }
     context = context ?? new AdditionalContext(this.getNoProcessId());
     this.logger.log('finished successfully', context, System.LoggingLevel.INFO);
@@ -273,6 +268,12 @@ global virtual without sharing class RollupAsyncProcessor extends Rollup impleme
     // side effect in the below method - rollups can be removed from this.rollups if a control record ShouldAbortRun__c == true
     // they also can be added to syncRollups if we're already async
     List<RollupAsyncProcessor> syncRollups = new List<RollupAsyncProcessor>();
+    // snapshot BEFORE ingest: it relocates rollups out of this.rollups into syncRollups or the
+    // static cached-rollup list, so by the time a bail-out below walks the tree the gated rollup
+    // may no longer be in it. Every bail arm means nothing ran, so releasing the pre-ingest set is
+    // both safe and necessary. Scoped to this conductor's own rollups — releasing straight from the
+    // static cache would hand back claims belonging to a sibling conductor that is still going.
+    List<RollupAsyncProcessor> preIngestRollups = new List<RollupAsyncProcessor>(this.rollups);
     Boolean shouldRunWithoutCustomSetting = this.ingestRollupControlData(syncRollups);
 
     Boolean isBasicNoOp = this.rollups.isEmpty() && syncRollups.isEmpty() && this.isFullRecalc == false;
@@ -313,7 +314,12 @@ global virtual without sharing class RollupAsyncProcessor extends Rollup impleme
       // enqueued and no finalizer fires. Releasing here is the only thing standing between an
       // operator flipping IsEnabled__c off during a data load and every gated rollup group staying
       // claimed until its TTL expires.
+      // `getNoProcessId()` is 'No process Id', never 'no-op', so a run that processed sync rollups
+      // cannot land here — every arm above means no rollup in this tree ran.
       this.releaseFullRecalcGate();
+      for (RollupAsyncProcessor preIngestRollup : preIngestRollups) {
+        preIngestRollup.releaseFullRecalcGate();
+      }
     }
     this.logger.save();
     return rollupProcessId;
@@ -1275,8 +1281,10 @@ global virtual without sharing class RollupAsyncProcessor extends Rollup impleme
         this.rollups.remove(index);
       } else if (rollup.rollupControl.ShouldAbortRun__c || this.rollupControl.ShouldAbortRun__c) {
         // aborted rollups leave the tree HERE, before runCalc's release walk further down can see
-        // them, so the walk alone would miss a gate armed on one of them. Unlike the two branches
-        // below — which relocate a rollup that still runs — this one means it never runs at all.
+        // them, so the walk alone would miss a gate armed on one of them. The two branches below
+        // relocate rather than drop, and normally the relocated rollup still runs — but if runCalc
+        // then bails, it does not, which is why runCalc releases from a pre-ingest snapshot rather
+        // than trusting this list. Releasing here as well is free: the latch makes it idempotent.
         rollup.releaseFullRecalcGate();
         this.rollups.remove(index);
       } else if (couldRunSync && shouldRunSyncDeferred == false) {

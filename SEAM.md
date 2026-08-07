@@ -56,13 +56,28 @@ Seven rules hold the seam together; breaking any of them reintroduces a bug we a
    `RollupSettings__c.IsEnabled__c` kill switch, and "no matching rollups". No job means no finalizer
    means no release, so `RollupAsyncProcessor.runCalc` calls `releaseFullRecalcGate()` on that join
    point and walks its `rollups` (the bailing processor is routinely a plain conductor holding the
-   gated one). `ShouldAbortRun__c` needs a second release site: `ingestRollupControlData` prunes
-   aborted rollups out of `rollups` BEFORE that walk runs, so it releases each one as it removes it.
+   gated one).
+
+   **Walking `this.rollups` at the join point is NOT sufficient, and assuming it was cost two
+   rounds.** `ingestRollupControlData` empties that list first, three different ways: it prunes an
+   aborted rollup (which is why it releases each one as it removes it), and it _relocates_ a rollup
+   that `couldRunSync` into either the local `syncRollups` list or the static cached-rollup list.
+   The relocated ones normally run — but on a bail nothing runs, `process(syncRollups)` sits in the
+   `else`, and the walk sees an empty tree. `runCalc` therefore releases from a **pre-ingest
+   snapshot** of `this.rollups`, which covers every relocation destination without reaching into
+   the static cache, where a sibling conductor's still-live rollups also sit. `couldRunSync` is
+   satisfied by `ShouldRunAs__c = Synchronous` (which
+   `setControlToSyncForSingularParentRecalcs` forces for `FROM_SINGULAR_PARENT_RECALC_LWC`), by any
+   already-async run that is not timing out, or by an exceeded org async limit — so this is a live
+   combination, not a corner. Pinned by `killSwitchReleasesAClaimRelocatedToTheSyncList`.
+   `getNoProcessId()` is `'No process Id'` and never `'no-op'`, so a run that DID process sync
+   rollups cannot reach the bail arm; the snapshot release cannot fire early.
    Build-time filtering cannot cover any of this — an operator can flip either switch after the
    consult and before the run. The one case that IS filtered at build time is the recalc still
    `isNoOp` with `recordCount == 0`, which `addRollup` drops outright: it is dropped before any
    finalizer exists, so it must never be consulted in the first place
    (`zeroRecordRecalcIsNeverConsulted`).
+
 4. **Only a processor that will actually release may be gated, enforced at the consult site.** The
    guard that makes this true is the one inside `applyFullRecalcGate`; the near-identical check in
    `buildFullRecalcRollup` is a cost optimisation that skips gate resolution and context
@@ -90,7 +105,15 @@ Seven rules hold the seam together; breaking any of them reintroduces a bug we a
    to `finish(BatchableContext)` only when `fullRecalcProcessor.isBatch() != true`, and the only
    gateable conductor is `RollupFullBatchRecalculator`, whose `isBatch()` is always true — so its
    delegates always take `executeFinish()` instead. `RollupDeferredFullRecalcProcessor` does reach
-   that branch but is never gated. **This rule is held by that routing, not by a guard.** An earlier
+   that branch but is never gated.
+
+   That same routing is why `RollupAsyncProcessor.finish` deliberately does **not** release through
+   `fullRecalcProcessor`. It once did. The call could never fire for a real claim (null on the
+   Batchable route, non-gateable types on the Queueable one) and the single shape that would have
+   reached it is the early release this rule forbids, so it was removed and the absence documented
+   in place. Do not reinstate it on a bump.
+
+   **This rule is held by that routing, not by a guard.** An earlier
    revision of this fork carried an `isDelegatedInnerRollup` flag to enforce it; it was removed as
    speculative divergence on upstream-owned files once the routing was traced. If a bump changes
    either `isBatch()` or that branch in `execute`, re-derive this before shipping.
@@ -101,8 +124,12 @@ Seven rules hold the seam together; breaking any of them reintroduces a bug we a
    instance reaching `finish(BatchableContext)` is deserialized from the state captured at
    `executeBatch` — before `performWork` assigns the `fullRecalcProcessor` self-reference. The
    inherited release reads that field and finds null, silently. `RollupFullRecalcProcessor` therefore
-   overrides `finish(BatchableContext)` and releases `this` in a `finally`; the `hasNotifiedGate`
-   latch keeps it idempotent with the inherited call. Pinned end to end by
+   overrides `finish(BatchableContext)` and releases `this` in a `finally`. It is deliberately NOT
+   gated on `isTimingOut` the way the base implementation is: this override is only ever reached as
+   a Batchable, where `finish` is terminal by definition, and the field is a stale serialized
+   artifact there — `beginAsyncRollup` sets it false on the line before `startAsyncWork`, while the
+   failsafe route bypasses `beginAsyncRollup` entirely and can carry a `true` forward from an
+   earlier page. A guard would suppress the only release the job ever gets. Pinned end to end by
    `suppressedConductorStillRunsTheOtherRollupGroups`, which asserts the released KEYS against the
    proceeded ones, and at unit level by `batchableFailsafeCompletionReleasesGate`.
 
@@ -165,7 +192,7 @@ Resolve conflicts (historically only in `extra-tests/testSuites/ApexRollupTestSu
 when upstream reorganizes tests). Then **verify with aer** before tagging:
 
 ```
-aer test rollup extra-tests --skip-errors -f RollupFullRecalcGateTests   # seam: expect 42/42
+aer test rollup extra-tests --skip-errors -f RollupFullRecalcGateTests   # seam: expect 43/43
 aer test rollup extra-tests --skip-errors -f ZZ                          # carries: expect 19/19
 ```
 

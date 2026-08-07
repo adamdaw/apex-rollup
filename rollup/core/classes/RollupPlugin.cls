@@ -29,7 +29,10 @@ public without sharing class RollupPlugin {
   }
 
   public RollupPluginParameter__mdt getParameterInstance(String developerNameOrId) {
-    return parameterMock ?? RollupPluginParameter__mdt.getInstance(developerNameOrId);
+    if (parameterMock != null) {
+      return parameterMock;
+    }
+    return onlyUseMockPlugins ? null : RollupPluginParameter__mdt.getInstance(developerNameOrId);
   }
 
   public List<RollupPluginParameter__mdt> getMatchingParameters(Id pluginId) {

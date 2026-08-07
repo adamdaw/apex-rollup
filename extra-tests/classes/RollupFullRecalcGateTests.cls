@@ -971,6 +971,31 @@ public class RollupFullRecalcGateTests {
     Assert.areEqual(probeProceeded, probeReleased, 'exactly one release per proceeded group, keyed to that group');
   }
 
+  // ---- REVIEW R6-H1 PROBE ----
+  @IsTest
+  static void killSwitchReleasesAClaimRelocatedToTheSyncList() {
+    beforeEnqueueCount = 0;
+    afterCompleteCount = 0;
+    Rollup.defaultControl = new RollupControl__mdt(
+      IsRollupLoggingEnabled__c = true,
+      MaxLookupRowsBeforeBatching__c = 0,
+      ShouldRunAs__c = RollupMetaPicklists.ShouldRunAs.Synchronous
+    );
+    registerGate(ProceedGate.class.getName());
+    insert as system new Contact(LastName = 'sync relocation kill switch');
+    RollupSettings__c settings = RollupSettings__c.getInstance();
+    settings.IsEnabled__c = false;
+    upsert as system settings;
+
+    Test.startTest();
+    String processId = Rollup.performBulkFullRecalc(grandparentMetas(), Rollup.InvocationPoint.FROM_FULL_RECALC_LWC.name());
+    Test.stopTest();
+
+    Assert.areEqual(1, beforeEnqueueCount, 'precondition: the gate was consulted at build time');
+    Assert.isTrue(processId.contains('IsEnabled__c is false'), 'precondition: the kill switch aborted the recalc. Got: ' + processId);
+    Assert.areEqual(1, afterCompleteCount, 'a claim relocated into the sync list must still be released on a bail');
+  }
+
   // ---- REVIEW R5-F4: the bail-out release must walk DOWN, not just release the processor whose
   // runCalc bailed. performBulkFullRecalc hangs the other groups off the conductor's `rollups`, so a
   // conductor-only release strands every group but the first. ----

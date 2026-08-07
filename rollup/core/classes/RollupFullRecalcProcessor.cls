@@ -60,11 +60,12 @@ global abstract without sharing class RollupFullRecalcProcessor extends RollupAs
    * `hasNotifiedGate` is a per-INSTANCE latch, which is what the cursor chain needs — each page's
    * Queueable is the serialized previous instance, so the latch travels with it. It does NOT span a
    * sibling copy, so every release site must be one that only the owning processor reaches. There
-   * are five, and each qualifies: `FullRecalcFinalizer`'s terminal-success and unhandled-exception
-   * branches (both on the conductor they were built for), this class's `releaseFullRecalcGate` and
-   * its `finish(BatchableContext)` override (both on `this`), and `RollupAsyncProcessor`'s
-   * Batchable finish through `fullRecalcProcessor`. See SEAM.md rules 6 and 7 for the routing
-   * argument behind the last two, and for the one shape that still escapes them.
+   * are four, and each qualifies: `FullRecalcFinalizer`'s terminal-success and unhandled-exception
+   * branches (both on the conductor they were built for), and this class's `releaseFullRecalcGate`
+   * and `finish(BatchableContext)` override (both on `this`). A fifth, through
+   * `RollupAsyncProcessor.finish`'s `fullRecalcProcessor`, was removed once it was shown it could
+   * only ever fire as a rule-6 early release. See SEAM.md rules 6 and 7 for the routing argument,
+   * and for the one shape that still escapes all four.
    */
   public void notifyGateComplete() {
     if (this.fullRecalcGate == null || this.hasNotifiedGate) {
@@ -157,19 +158,25 @@ global abstract without sharing class RollupFullRecalcProcessor extends RollupAs
    * the serialized copy still carries the gate, so releasing on `this` is both correct and, via the
    * `hasNotifiedGate` latch, idempotent with the inherited release.
    *
-   * Gated on `isTimingOut` for the same reason the base implementation is: a job that hit governor
-   * limits has deferred work and is NOT terminally complete. Releasing there would hand the claim
-   * back while the recalc is still running, and an early release is worse than a late one — a TTL
-   * backstops a late release, nothing backstops an early one.
+   * Deliberately NOT gated on `isTimingOut`, unlike the base implementation. This override is only
+   * ever reached as a Batchable, where `finish` is terminal by definition — the platform calls it
+   * once, after the last chunk. `isTimingOut` cannot mean "more work pending" here for the same
+   * not-Stateful reason the field above is null: the value is whatever was captured at
+   * `Database.executeBatch`, and `beginAsyncRollup` sets it false on the line before
+   * `startAsyncWork`. The failsafe route bypasses `beginAsyncRollup` and can therefore serialize a
+   * stale `true` from a previous page, so a guard here would suppress the only release the job will
+   * ever get — the exact strand this override exists to prevent.
+   *
+   * The Queueable route cannot reach here: `QueueableProcessor.execute` calls `finish(context)` only
+   * when `fullRecalcProcessor?.isBatch() != true`, and a gated processor is always a
+   * `RollupFullBatchRecalculator`, whose `isBatch()` is hardcoded true.
    * @param context the batch context, forwarded untouched to the base implementation
    */
   public override void finish(Database.BatchableContext context) {
     try {
       super.finish(context);
     } finally {
-      if (this.isTimingOut == false) {
-        this.notifyGateComplete();
-      }
+      this.notifyGateComplete();
     }
   }
 
