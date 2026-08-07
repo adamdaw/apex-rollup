@@ -102,6 +102,16 @@ Seven rules hold the seam together; breaking any of them reintroduces a bug we a
    there and returns early cancels rollup groups the gate never suppressed — silently, no job and no
    log. `RollupSuppressedFullRecalc.runCalc` promotes the first live processor instead, mirroring
    `RollupParentResetProcessor.arrangeCabooses`.
+
+   **`runCalc` is not the only override doing work, and a cold round caught us claiming it was.**
+   That promotion path is the MULTI-group shape. With exactly one suppressed group — the primary
+   case for a concurrency gate — the promotion branch is skipped entirely, `Rollup.batch()` wraps
+   the substitute in a plain conductor, and `getAsyncRollup`'s `rollups.size() == 1 && rollups[0]
+instanceof RollupFullRecalcProcessor` arm hands it straight to `beginAsyncRollup()`. `runCalc`
+   never runs; `startAsyncWork` is the only thing preventing a real enqueued job. Deleting it as
+   "dead" makes a suppressed recalc run. `performWork` is genuinely unreachable, but only because
+   `startAsyncWork` returns first — keep both.
+
 6. **Only the conductor may release.** `hasNotifiedGate` is a per-instance latch: it rides the cursor
    chain (each page is the serialized previous instance) but does NOT span a sibling copy. So a
    release site reachable by a delegated inner rollup would fire `afterComplete` from that rollup's
@@ -152,6 +162,17 @@ Seven rules hold the seam together; breaking any of them reintroduces a bug we a
    anyway, so rule 7 covers them and the gap never shows. A gate implementation must treat a missing
    `afterComplete` as possible and rely on its TTL; do not assume the release is guaranteed for the
    third and later groups of a bulk recalc.
+
+   **Why it is not fixed here, so the next reader does not have to re-derive the call.** The fix is
+   roughly ten lines across two upstream-owned files — carrying a release target on the finalizer
+   separately from its bound conductor — and no test at any layer can confirm it works, because the
+   shape that needs it cannot be built in an Apex test. That is speculative divergence on the exact
+   files where divergence costs the most, defending a state we cannot demonstrate, and an earlier
+   revision of this fork deleted ~25 lines of precisely that. If the shape ever becomes reproducible
+   (a platform change to the in-test queueable chaining cap, or an org-level trace), revisit it.
+   Until then the mitigation is the TTL requirement in `RollupFullRecalcGate.afterComplete`'s
+   contract — which is a requirement on the consumer, not a control in this repo, and should be
+   carried as an acceptance criterion on whatever ticket activates a gate.
 
 **Zero behavior change unless a gate class is registered.** With no `RollupPlugin__mdt` registration the
 seam is inert, so it is safe to carry on top of any upstream release.
