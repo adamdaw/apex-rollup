@@ -350,7 +350,7 @@ public class RollupFullRecalcGateTests {
     Assert.isFalse(cached instanceof RollupSuppressedFullRecalc, 'no gate must never substitute a suppressed processor');
   }
 
-  // ---- F1a (real path): SUPPRESS substitutes the built cursor processor via performBulkFullRecalc ----
+  // ---- (real path) SUPPRESS substitutes the built cursor processor via performBulkFullRecalc ----
   @IsTest
   static void realPathSuppressSubstitutesBuiltProcessor() {
     Rollup.defaultControl = new RollupControl__mdt(IsRollupLoggingEnabled__c = true, MaxLookupRowsBeforeBatching__c = 0);
@@ -371,7 +371,7 @@ public class RollupFullRecalcGateTests {
     Test.stopTest();
   }
 
-  // ---- F1b (real path): PROCEED keeps the cursor processor AND consults the gate exactly once ----
+  // ---- (real path) PROCEED keeps the cursor processor AND consults the gate exactly once ----
   @IsTest
   static void realPathProceedKeepsBatchRecalculatorAndConsults() {
     beforeEnqueueCount = 0;
@@ -389,7 +389,7 @@ public class RollupFullRecalcGateTests {
     Test.stopTest();
   }
 
-  // ---- F3 (real finalizer): terminal-success release fires afterComplete exactly once ----
+  // ---- (real finalizer) terminal-success release fires afterComplete exactly once ----
   @IsTest
   static void realFinalizerSuccessBranchReleasesOnce() {
     afterCompleteCount = 0;
@@ -405,7 +405,7 @@ public class RollupFullRecalcGateTests {
     Assert.areEqual(1, afterCompleteCount, 'the real FullRecalcFinalizer must release the gate exactly once on terminal success');
   }
 
-  // ---- F4 (real finalizer): failure branch releases afterComplete ----
+  // ---- (real finalizer) failure branch releases afterComplete ----
   @IsTest
   static void realFinalizerFailureBranchReleasesOnce() {
     afterCompleteCount = 0;
@@ -420,7 +420,7 @@ public class RollupFullRecalcGateTests {
     Assert.areEqual(1, afterCompleteCount, 'the real FullRecalcFinalizer must release the gate on the UNHANDLED_EXCEPTION branch');
   }
 
-  // ---- F5: no double-notify — the failure hook must NOT fire on the success branch ----
+  // ---- no double-notify — the failure hook must NOT fire on the success branch ----
   @IsTest
   static void successBranchDoesNotInvokeHandleUnhandledException() {
     RecordingFinalizer finalizer = new RecordingFinalizer();
@@ -432,7 +432,7 @@ public class RollupFullRecalcGateTests {
     Assert.isFalse(finalizer.handleUnhandledExceptionCalled, 'handleUnhandledException must fire only on the exception branch, never on success');
   }
 
-  // ---- F7 (real path): a resolvable-but-non-assignable class fails open, no ClassCastException ----
+  // ---- (real path) a resolvable-but-non-assignable class fails open, no ClassCastException ----
   @IsTest
   static void nonAssignableGateFailsOpenOnRealPath() {
     Rollup.defaultControl = new RollupControl__mdt(IsRollupLoggingEnabled__c = true, MaxLookupRowsBeforeBatching__c = 0);
@@ -453,7 +453,7 @@ public class RollupFullRecalcGateTests {
     Test.stopTest();
   }
 
-  // ---- F1a (real path): a gate whose no-arg constructor throws fails open ----
+  // ---- (real path) a gate whose no-arg constructor throws fails open ----
   @IsTest
   static void constructorThrowingGateFailsOpenOnRealPath() {
     Rollup.defaultControl = new RollupControl__mdt(IsRollupLoggingEnabled__c = true, MaxLookupRowsBeforeBatching__c = 0);
@@ -469,7 +469,7 @@ public class RollupFullRecalcGateTests {
     Test.stopTest();
   }
 
-  // ---- F1b (real path): a gate whose beforeEnqueue throws fails open ----
+  // ---- (real path) a gate whose beforeEnqueue throws fails open ----
   @IsTest
   static void beforeEnqueueThrowingGateFailsOpenOnRealPath() {
     Rollup.defaultControl = new RollupControl__mdt(IsRollupLoggingEnabled__c = true, MaxLookupRowsBeforeBatching__c = 0);
@@ -485,7 +485,7 @@ public class RollupFullRecalcGateTests {
     Test.stopTest();
   }
 
-  // ---- F3 (real path): the deferred/small-set branch is never consulted ----
+  // ---- (real path) the deferred/small-set branch is never consulted ----
   @IsTest
   static void deferredPathIsNotConsultedOnRealPath() {
     beforeEnqueueCount = 0;
@@ -506,7 +506,7 @@ public class RollupFullRecalcGateTests {
     Test.stopTest();
   }
 
-  // ---- F1 (real finalizer, mocked retriever): afterComplete fires ONCE at terminal completion, NOT per cursor page ----
+  // ---- (real finalizer, mocked retriever) afterComplete fires ONCE at terminal completion, NOT per cursor page ----
   // The distinguishing logic lives in FullRecalcFinalizer.handleSuccess:
   //   if (conductor.retriever?.shouldContinue()) { startAsyncWork(); } else { finish(); notifyGateComplete(); }
   // A fake retriever drives both branches without a live Database.getCursor; the NoEnqueueBatchRecalc subclass
@@ -531,7 +531,7 @@ public class RollupFullRecalcGateTests {
     Test.stopTest();
   }
 
-  // ---- F2 (real finalizer): a throwing afterComplete is contained at the real terminal release site ----
+  // ---- (real finalizer) a throwing afterComplete is contained at the real terminal release site ----
   @IsTest
   static void afterCompleteThrowIsContainedAtRealSite() {
     afterCompleteCount = 0;
@@ -548,7 +548,7 @@ public class RollupFullRecalcGateTests {
     Assert.areEqual(1, afterCompleteCount, 'afterComplete must have been invoked once, and its throw contained by notifyGateComplete');
   }
 
-  // ---- F4 (real path): a bogus, unresolvable gate class name fails open ----
+  // ---- (real path) a bogus, unresolvable gate class name fails open ----
   @IsTest
   static void bogusGateClassNameFailsOpenOnRealPath() {
     Rollup.defaultControl = new RollupControl__mdt(IsRollupLoggingEnabled__c = true, MaxLookupRowsBeforeBatching__c = 0);
@@ -565,7 +565,7 @@ public class RollupFullRecalcGateTests {
     Test.stopTest();
   }
 
-  // ---- F1 (payload): the gate actually receives a correctly-populated RollupFullRecalcContext ----
+  // ---- (payload) the gate actually receives a correctly-populated RollupFullRecalcContext ----
   @IsTest
   static void gateReceivesPopulatedContextOnRealPath() {
     capturedContext = null;
@@ -599,7 +599,7 @@ public class RollupFullRecalcGateTests {
     Test.stopTest();
   }
 
-  // ---- F2 (real finalizer): failure branch with a THROWING afterComplete is contained ----
+  // ---- (real finalizer) failure branch with a THROWING afterComplete is contained ----
   @IsTest
   static void failureBranchAfterCompleteThrowIsContained() {
     afterCompleteCount = 0;
@@ -616,7 +616,7 @@ public class RollupFullRecalcGateTests {
     Assert.areEqual(1, afterCompleteCount, 'afterComplete must be invoked once on the failure branch and its throw contained');
   }
 
-  // ---- F4: a SUPPRESS-substituted processor never fires afterComplete (the winner owns the release) ----
+  // ---- a SUPPRESS-substituted processor never fires afterComplete (the winner owns the release) ----
   @IsTest
   static void suppressedSubstituteStaysSilent() {
     afterCompleteCount = 0;
@@ -635,7 +635,7 @@ public class RollupFullRecalcGateTests {
     Assert.areEqual(0, afterCompleteCount, 'the suppressed substitute must never fire afterComplete — the winner owns the release');
   }
 
-  // ---- MINOR-1: the Batchable failsafe completion path also releases the gate (container-agnostic) ----
+  // ---- the Batchable failsafe completion path also releases the gate (container-agnostic) ----
   @IsTest
   static void batchableFailsafeCompletionReleasesGate() {
     afterCompleteCount = 0;
@@ -655,7 +655,7 @@ public class RollupFullRecalcGateTests {
     Assert.areEqual(1, afterCompleteCount, 'the Batchable failsafe completion path must release the gate exactly once');
   }
 
-  // ---- F1: the REAL performBulkFullRecalc build path arms the release (terminal success) ----
+  // ---- the REAL performBulkFullRecalc build path arms the release (terminal success) ----
   @IsTest
   static void realEntryPathArmsReleaseOnSuccess() {
     afterCompleteCount = 0;
@@ -678,7 +678,7 @@ public class RollupFullRecalcGateTests {
     Test.stopTest();
   }
 
-  // ---- F1: the REAL build path arms the release on the failure branch too ----
+  // ---- the REAL build path arms the release on the failure branch too ----
   @IsTest
   static void realEntryPathArmsReleaseOnFailure() {
     afterCompleteCount = 0;
@@ -695,7 +695,7 @@ public class RollupFullRecalcGateTests {
     Test.stopTest();
   }
 
-  // ---- Gate-4 BLOCKER: a throwing terminal finish() on the SUCCESS path must STILL release the gate ----
+  // ---- a throwing terminal finish() on the SUCCESS path must STILL release the gate ----
   // Without try/finally the finish() throw skips notifyGateComplete() and is NOT routed to
   // handleUnhandledException (in-finalizer throw != job UNHANDLED_EXCEPTION) => a stranded gate claim.
   @IsTest
@@ -766,7 +766,7 @@ public class RollupFullRecalcGateTests {
     Test.stopTest();
   }
 
-  // ---- F2(a): the recalc key discriminates between different rollup groups ----
+  // ---- the recalc key discriminates between different rollup groups ----
   @IsTest
   static void recalcKeyDiscriminatesRollupGroups() {
     // group one: RollupChild__c / 'Child_To_Parent_Concat'
@@ -839,7 +839,7 @@ public class RollupFullRecalcGateTests {
     Assert.areEqual(result.getNoProcessId(), runResult, 'the substitute performs no async work');
   }
 
-  // ---- REVIEW R4-F1: the kill switches abort AFTER the gate was consulted — release anyway ----
+  // ---- the kill switches abort AFTER the gate was consulted — release anyway ----
   @IsTest
   static void killSwitchReleasesTheClaimItNeverGotToUse() {
     beforeEnqueueCount = 0;
@@ -869,7 +869,7 @@ public class RollupFullRecalcGateTests {
     Assert.areEqual(1, afterCompleteCount, 'a recalc aborted after the consult must still release — nothing downstream can');
   }
 
-  // ---- REVIEW R5-F1: the OTHER operator kill switch also releases ----
+  // ---- the OTHER operator kill switch also releases ----
   @IsTest
   static void abortSwitchReleasesTheClaimItNeverGotToUse() {
     beforeEnqueueCount = 0;
@@ -894,7 +894,7 @@ public class RollupFullRecalcGateTests {
     Assert.areEqual(1, afterCompleteCount, 'an aborted recalc must release even though it was pruned out of the tree before the walk');
   }
 
-  // ---- REVIEW R5-F2: the build-time no-op filter is what stops the other strand ----
+  // ---- the build-time no-op filter is what stops the other strand ----
   @IsTest
   static void zeroRecordRecalcIsNeverConsulted() {
     beforeEnqueueCount = 0;
@@ -917,7 +917,7 @@ public class RollupFullRecalcGateTests {
     Assert.areEqual(0, afterCompleteCount, 'nothing was claimed, so nothing should be released');
   }
 
-  // ---- REVIEW R3-F1: suppressing one rollup group must not cancel the others ----
+  // ---- suppressing one rollup group must not cancel the others ----
   @IsTest
   static void suppressedConductorStillRunsTheOtherRollupGroups() {
     // three calc-item types, so performBulkFullRecalc promotes processors[0] to conductor and hangs
@@ -974,7 +974,8 @@ public class RollupFullRecalcGateTests {
     Assert.areEqual(probeProceeded, probeReleased, 'exactly one release per proceeded group, keyed to that group');
   }
 
-  // ---- REVIEW R6-H1 PROBE ----
+  // ---- ingestRollupControlData relocates a couldRunSync rollup OUT of this.rollups before the
+  // bail arm walks the tree, so the release has to come from the pre-ingest snapshot ----
   @IsTest
   static void killSwitchReleasesAClaimRelocatedToTheSyncList() {
     beforeEnqueueCount = 0;
@@ -999,7 +1000,7 @@ public class RollupFullRecalcGateTests {
     Assert.areEqual(1, afterCompleteCount, 'a claim relocated into the sync list must still be released on a bail');
   }
 
-  // ---- REVIEW R5-F4: the bail-out release must walk DOWN, not just release the processor whose
+  // ---- the bail-out release must walk DOWN, not just release the processor whose
   // runCalc bailed. performBulkFullRecalc hangs the other groups off the conductor's `rollups`, so a
   // conductor-only release strands every group but the first. ----
   @IsTest
@@ -1038,7 +1039,7 @@ public class RollupFullRecalcGateTests {
     Assert.areEqual(3, afterCompleteCount, 'the conductor must release the groups it carries in `rollups`, not only its own claim');
   }
 
-  // ---- REVIEW R6-A: the parent-reset processor passes the type test and must still not be gated ----
+  // ---- the parent-reset processor passes the type test and must still not be gated ----
   @IsTest
   static void parentResetProcessorIsNotGated() {
     beforeEnqueueCount = 0;
@@ -1056,7 +1057,7 @@ public class RollupFullRecalcGateTests {
     Assert.isTrue(result == parentReset, 'it must come back untouched, even from a gate that suppresses');
   }
 
-  // ---- REVIEW R2-F2: a non-cursor processor is never gated, even when handed straight in ----
+  // ---- a non-cursor processor is never gated, even when handed straight in ----
   @IsTest
   static void nonCursorProcessorIsNotGated() {
     beforeEnqueueCount = 0;
@@ -1160,7 +1161,7 @@ public class RollupFullRecalcGateTests {
     Assert.isNull(gate, 'with no plugin record the gate resolves null');
   }
 
-  // ---- REVIEW R2-P2: a gate that claims state then throws must still get its release ----
+  // ---- a gate that claims state then throws must still get its release ----
   @IsTest
   static void claimThenThrowStillReleasesTheClaim() {
     claimCount = 0;
@@ -1181,7 +1182,7 @@ public class RollupFullRecalcGateTests {
     Assert.areEqual(1, afterCompleteCount, 'a claim taken by a gate that then throws must still be released, not stranded until TTL');
   }
 
-  // ---- REVIEW R2-P3: the gate class name must come from a parameter scoped to the gate plugin ----
+  // ---- the gate class name must come from a parameter scoped to the gate plugin ----
   @IsTest
   static void parameterAttachedToAnotherPluginDoesNotActivateTheGate() {
     // the plugin carries a real Id and the parameter names a DIFFERENT one, which is the only shape
@@ -1202,7 +1203,7 @@ public class RollupFullRecalcGateTests {
     Assert.isNull(gate, 'a FullRecalcGateClass parameter attached to a DIFFERENT plugin must not activate this gate');
   }
 
-  // ---- REVIEW R6-F5: removing the plugin record disarms the gate, parameter or no parameter ----
+  // ---- removing the plugin record disarms the gate, parameter or no parameter ----
   @IsTest
   static void removingThePluginRecordDisarmsTheGate() {
     RollupPlugin.onlyUseMockPlugins = true;
@@ -1219,7 +1220,7 @@ public class RollupFullRecalcGateTests {
     Assert.isNull(gate, 'with the plugin record gone the gate must resolve null even though its parameter survives');
   }
 
-  // ---- REVIEW R3-F3: an UNATTACHED parameter still activates — documenting the real behaviour ----
+  // ---- an UNATTACHED parameter still activates — documenting the real behaviour ----
   @IsTest
   static void unattachedParameterStillActivatesTheGate() {
     RollupPlugin.pluginMocks = new List<RollupPlugin__mdt>{
@@ -1237,7 +1238,7 @@ public class RollupFullRecalcGateTests {
     Assert.isInstanceOfType(gate, ProceedGate.class, 'an unattached parameter is tolerated by getMatchingParameters and still resolves');
   }
 
-  // ---- REVIEW R2-P3: a parameter under the right plugin but the wrong name is ignored ----
+  // ---- a parameter under the right plugin but the wrong name is ignored ----
   @IsTest
   static void parameterWithAnotherNameDoesNotActivateTheGate() {
     RollupPlugin.pluginMocks = new List<RollupPlugin__mdt>{ new RollupPlugin__mdt(DeveloperName = Rollup.FULL_RECALC_GATE_NAME) };

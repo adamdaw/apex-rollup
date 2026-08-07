@@ -38,6 +38,13 @@ public interface RollupFullRecalcGate {
    * between the gate consult and the enqueue (an uncaught exception, a governor limit). An
    * implementation that claims state MUST therefore carry its own expiry — a TTL on the claim is
    * the only backstop for that window, and a policy without one can strand a claim forever.
+   *
+   * Treat this as PERMISSION TO RE-CLAIM, never as proof the recalc finished. It can also arrive
+   * EARLY, while work for the same recalc is still queued: a Batchable chunk that defers rollups
+   * re-enqueues them as a separate job, and the terminal `finish` fires regardless (SEAM.md rule 7,
+   * gap B). A policy that keys anything on "the data is now settled" — cache invalidation, a
+   * downstream sync, a completion signal — is unsafe on that assumption. Releasing a claim is safe
+   * because the worst case is a redundant recalc; anything stronger is not.
    * @param context the same context captured at `beforeEnqueue` for this recalc
    */
   void afterComplete(RollupFullRecalcContext context);

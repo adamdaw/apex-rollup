@@ -67,7 +67,10 @@ Seven rules hold the seam together; breaking any of them reintroduces a bug we a
 
    **Walking `this.rollups` at the join point is NOT sufficient, and assuming it was cost two
    rounds.** `ingestRollupControlData` empties that list first, three different ways: it prunes an
-   aborted rollup (which is why it releases each one as it removes it), and it _relocates_ a rollup
+   aborted rollup and a duplicate-hash one (which is why both arms release as they remove — a
+   silent removal from a conductor that RUNS ON never reaches the bail arm at all, and a surviving
+   duplicate carries its own `runToken`, so its release does not cover the one dropped), and it
+   _relocates_ a rollup
    that `couldRunSync` into either the local `syncRollups` list or the static cached-rollup list.
    The relocated ones normally run — but on a bail nothing runs, `process(syncRollups)` sits in the
    `else`, and the walk sees an empty tree. `runCalc` therefore releases from a **pre-ingest
@@ -77,8 +80,12 @@ Seven rules hold the seam together; breaking any of them reintroduces a bug we a
    `setControlToSyncForSingularParentRecalcs` forces for `FROM_SINGULAR_PARENT_RECALC_LWC`), by any
    already-async run that is not timing out, or by an exceeded org async limit — so this is a live
    combination, not a corner. Pinned by `killSwitchReleasesAClaimRelocatedToTheSyncList`.
-   `getNoProcessId()` is `'No process Id'` and never `'no-op'`, so a run that DID process sync
-   rollups cannot reach the bail arm; the snapshot release cannot fire early.
+   A run that DID process sync rollups cannot reach the bail arm, so the snapshot release cannot
+   fire early — but the reason is branch ORDER, not a process-id value: `isNoOp`,
+   `ShouldAbortRun__c` and the `IsEnabled__c` kill switch are all evaluated BEFORE the `else` that
+   calls `process(syncRollups)`. Do not restate this as "`getNoProcessId()` is never `'no-op'`";
+   that sentinel is overwritten unconditionally by the `beginAsyncRollup()` line whenever the tree
+   has rollups, so it proves nothing.
    Build-time filtering cannot cover any of this — an operator can flip either switch after the
    consult and before the run. The one case that IS filtered at build time is the recalc still
    `isNoOp` with `recordCount == 0`, which `addRollup` drops outright: it is dropped before any
@@ -150,7 +157,7 @@ instanceof RollupFullRecalcProcessor` arm hands it straight to `beginAsyncRollup
    `suppressedConductorStillRunsTheOtherRollupGroups`, which asserts the released KEYS against the
    proceeded ones, and at unit level by `batchableFailsafeCompletionReleasesGate`.
 
-   **Known gap, org-only and not fixed here.** With **three or more gated groups in one chain**,
+   **Known gap A, org-only and not fixed here — three or more gated groups.** With **three or more gated groups in one chain**,
    `RollupFullRecalcProcessor.finish()` runs `conductor.finalizer = conductor.finalizer ?? this.finalizer`
    (upstream, since v1.7.27) and the promoted conductor inherits a `FullRecalcFinalizer` bound to the
    PROMOTER. When the promoted conductor's job completes on the cursor path, `handleSuccess` releases
@@ -173,6 +180,37 @@ instanceof RollupFullRecalcProcessor` arm hands it straight to `beginAsyncRollup
    Until then the mitigation is the TTL requirement in `RollupFullRecalcGate.afterComplete`'s
    contract — which is a requirement on the consumer, not a control in this repo, and should be
    carried as an acceptance criterion on whatever ticket activates a gate.
+
+   **Known gap B, org-only and not fixed here — a chunk that defers its rollups.** The release this
+   override fires is unconditional, and a Batchable chunk can leave work outstanding. `process`
+   checks `getIsTimingOut(roll.rollupControl, AT_ROLLUP)` per rollup and hands anything over the
+   line to `addProcessorToDeferredRollups`; `processDeferredRollups` then rebuilds a conductor and
+   calls `startAsyncWork()` on it. That resolves to `startBatchProcessor`, whose every branch
+   produces a SEPARATE async job in a real org — `Database.executeBatch` throws when called from
+   inside a batch `execute`, and the catch falls to `new QueueableProcessor(this).startAsyncWork()`.
+   The platform then calls `finish(BatchableContext)` after the last chunk and this override
+   releases while that job is still queued: an **early** release, the direction rule 6 calls worse
+   than a late one and which a TTL cannot backstop. Note the `AT_PARENT` bypass
+   (`fullRecalcProcessor != null`) does not apply at the `AT_ROLLUP` call site, so a gated chunk
+   genuinely can defer.
+
+   The deferral half is **confirmed by trace**, not inferred: instrumenting `process` and driving a
+   gated `RollupFullBatchRecalculator` chunk with a PROCEED gate deferred 16 of 17 rollups and
+   reached `conductor.startAsyncWork()`. The early release itself does **not** reproduce, under
+   `aer` or in an Apex test: `aer` runs `Database.executeBatch` inline, so the deferred work
+   completes inside the same call and the release lands after it — correct, by accident of the
+   runtime.
+
+   **Why it is not fixed here.** Nothing observable at `finish(BatchableContext)` distinguishes
+   "a chunk re-enqueued deferred work" from "done". The Batchable is deliberately not
+   `Database.Stateful`, so the instance reaching `finish` is deserialized from the state captured at
+   `executeBatch` and cannot see a flag any chunk set — which is the same reason an `isTimingOut`
+   guard here would be wrong (above), not a reason to add one back. Detecting it needs state that
+   survives chunks, i.e. making the Batchable Stateful, on an upstream-owned file, defending a
+   state no test can demonstrate. Same call as gap A, and the same trigger to revisit. The
+   consumer-side consequence is sharper than gap A's, though: a gate must tolerate an `afterComplete`
+   that arrives **before** the recalc has actually finished, so a policy that treats the callback as
+   proof of completion — rather than as permission to re-claim after its own TTL — is unsafe here.
 
 **Zero behavior change unless a gate class is registered.** With no `RollupPlugin__mdt` registration the
 seam is inert, so it is safe to carry on top of any upstream release.

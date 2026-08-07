@@ -167,9 +167,17 @@ global abstract without sharing class RollupFullRecalcProcessor extends RollupAs
    * stale `true` from a previous page, so a guard here would suppress the only release the job will
    * ever get — the exact strand this override exists to prevent.
    *
-   * The Queueable route cannot reach here: `QueueableProcessor.execute` calls `finish(context)` only
-   * when `fullRecalcProcessor?.isBatch() != true`, and a gated processor is always a
-   * `RollupFullBatchRecalculator`, whose `isBatch()` is hardcoded true.
+   * The Queueable route CAN land here, but never for a gated processor. `QueueableProcessor.execute`
+   * calls `finish(context)` when `fullRecalcProcessor?.isBatch() != true`, and that is also true of a
+   * null field — so a directly-enqueued `RollupDeferredFullRecalcProcessor` does arrive, and
+   * `notifyGateComplete()` no-ops there because it was never gated. What protects the gated case is
+   * not the `!= true` check but the assignment before it: `performWork` sets the
+   * `fullRecalcProcessor` self-reference, and a gated processor is always a
+   * `RollupFullBatchRecalculator` whose `isBatch()` is hardcoded true.
+   *
+   * The release is unconditional, and that is not the same as terminal. A chunk that defers rollups
+   * re-enqueues them as a separate job which outlives this call, so the release can be EARLY —
+   * SEAM.md rule 7 gap B, org-only, not fixable from anything observable here.
    * @param context the batch context, forwarded untouched to the base implementation
    */
   public override void finish(Database.BatchableContext context) {

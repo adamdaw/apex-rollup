@@ -273,9 +273,7 @@ global virtual without sharing class RollupAsyncProcessor extends Rollup impleme
     // may no longer be in it. Every bail arm means nothing ran, so releasing the pre-ingest set is
     // both safe and necessary. Scoped to this conductor's own rollups — releasing straight from the
     // static cache would hand back claims belonging to a sibling conductor that is still going.
-    // only allocated when there is something to relocate: a leaf rollup has an empty tree, and that
-    // is the hot path SEAM.md rule 1 keeps the dormant seam free on
-    List<RollupAsyncProcessor> preIngestRollups = this.rollups.isEmpty() ? this.rollups : new List<RollupAsyncProcessor>(this.rollups);
+    List<RollupAsyncProcessor> preIngestRollups = new List<RollupAsyncProcessor>(this.rollups);
     Boolean shouldRunWithoutCustomSetting = this.ingestRollupControlData(syncRollups);
 
     Boolean isBasicNoOp = this.rollups.isEmpty() && syncRollups.isEmpty() && this.isFullRecalc == false;
@@ -1287,6 +1285,14 @@ global virtual without sharing class RollupAsyncProcessor extends Rollup impleme
 
       String hashedRollupKey = rollup.getHashedContents() + rollup.calcItems?.hashCode() + rollup.oldCalcItems?.hashCode();
       if (hashedRollups.contains(hashedRollupKey)) {
+        // Same reasoning as the abort arm below: a silent removal from a conductor that then runs
+        // on never reaches runCalc's bail arm, so nothing downstream hands this claim back. The
+        // surviving twin does NOT cover it — the gate is resolved per rollup group and mints a
+        // fresh `runToken` each time, and the interface requires a release to be matched against
+        // that token, so the twin's release is a no-op for this instance's claim.
+        // Also not pinnable under aer: reaching it needs two identical rollups to survive the
+        // build-time `recordCount == 0` filter in one transaction.
+        rollup.releaseFullRecalcGate();
         this.rollups.remove(index);
       } else if (rollup.rollupControl.ShouldAbortRun__c || this.rollupControl.ShouldAbortRun__c) {
         // Load-bearing, NOT redundant with runCalc's pre-ingest snapshot release, because the two
