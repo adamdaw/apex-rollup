@@ -29,8 +29,8 @@ Two more files diverge for the seam's sake:
   without the host org's real records deciding the answer. Pure instrumentation; production behaviour
   is identical while the flag is false. **This one announces itself** — the gate tests reference the
   field by name, so reverting the file to upstream is a compile error, not a silent green.
-- `RollupTests.cls` — the async-job stub in `fallsBackToRunningSyncWhenOutOfAsyncJobs` uses a literal
-  above any org's limit instead of upstream's `250001`. `DailyAsyncApexExecutions` scales with
+- `RollupTests.cls` — the async-job stub in `fallsBackToRunningSyncWhenOutOfAsyncJobs` DERIVES the
+  value from `System.OrgLimits` instead of upstream's literal `250001`. `DailyAsyncApexExecutions` scales with
   licenses (259,400 in a 100+-seat org), so upstream's literal does not exceed it there and the test
   fails in a real org. It passes either way under `aer`, so only a real org run catches a revert.
   This one is a genuine upstream bug and is the best candidate to PR away. **Check it by eye after

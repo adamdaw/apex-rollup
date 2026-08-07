@@ -273,7 +273,9 @@ global virtual without sharing class RollupAsyncProcessor extends Rollup impleme
     // may no longer be in it. Every bail arm means nothing ran, so releasing the pre-ingest set is
     // both safe and necessary. Scoped to this conductor's own rollups — releasing straight from the
     // static cache would hand back claims belonging to a sibling conductor that is still going.
-    List<RollupAsyncProcessor> preIngestRollups = new List<RollupAsyncProcessor>(this.rollups);
+    // only allocated when there is something to relocate: a leaf rollup has an empty tree, and that
+    // is the hot path SEAM.md rule 1 keeps the dormant seam free on
+    List<RollupAsyncProcessor> preIngestRollups = this.rollups.isEmpty() ? this.rollups : new List<RollupAsyncProcessor>(this.rollups);
     Boolean shouldRunWithoutCustomSetting = this.ingestRollupControlData(syncRollups);
 
     Boolean isBasicNoOp = this.rollups.isEmpty() && syncRollups.isEmpty() && this.isFullRecalc == false;
@@ -314,8 +316,15 @@ global virtual without sharing class RollupAsyncProcessor extends Rollup impleme
       // enqueued and no finalizer fires. Releasing here is the only thing standing between an
       // operator flipping IsEnabled__c off during a data load and every gated rollup group staying
       // claimed until its TTL expires.
-      // `getNoProcessId()` is 'No process Id', never 'no-op', so a run that processed sync rollups
-      // cannot land here — every arm above means no rollup in this tree ran.
+      // Why a run that PROCESSED sync rollups cannot land here — the release would be early
+      // otherwise, and rule 6 says an early release is the one a TTL cannot backstop. It is the
+      // branch ORDER that guarantees it, not the process-id value: `isNoOp`, `ShouldAbortRun__c`
+      // and the `IsEnabled__c` kill switch are all evaluated BEFORE the `else` that calls
+      // `process(syncRollups)`, so reaching any of them means it never ran. The fourth arm
+      // ("No matching rollups") needs `rollupProcessId` to still be the initial 'no-op', which
+      // requires that neither the sync assignment nor `beginAsyncRollup()` ran. Do not restate this
+      // as "getNoProcessId() is never 'no-op'": that sentinel is overwritten unconditionally by the
+      // `beginAsyncRollup()` line above whenever this tree has rollups, so it proves nothing.
       this.releaseFullRecalcGate();
       for (RollupAsyncProcessor preIngestRollup : preIngestRollups) {
         preIngestRollup.releaseFullRecalcGate();

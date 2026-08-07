@@ -2475,7 +2475,11 @@ global without sharing virtual class Rollup implements RollupLogger.ToStringObje
       // anything at all. Failing open is the seam's contract, so name the class and carry the
       // exception through — RollupLogger renders its message and stacktrace.
       RollupLogger.Instance.log(
-        'full recalc gate resolution failed for "' + typeName + '" with ' + ex.getTypeName() + ', proceeding ungated',
+        'full recalc gate resolution failed ' +
+          (typeName == null ? 'before a class name was resolved' : 'for "' + typeName + '"') +
+          ' with ' +
+          ex.getTypeName() +
+          ', proceeding ungated',
         ex,
         System.LoggingLevel.WARN
       );
